@@ -49,19 +49,31 @@ async def get_leagues(user_id: str, season: str) -> list:
 
 async def get_rosters(league_id: str) -> list:
     cached = get_cached(rosters_cache, league_id)
-    if cached:
+    if cached is not None:
         return cached
-    data = await _get(f"{BASE_URL}/league/{league_id}/rosters")
-    return set_cached(rosters_cache, league_id, data or [])
+    try:
+        data = await _get(f"{BASE_URL}/league/{league_id}/rosters")
+    except Exception:
+        data = []
+    result = data if isinstance(data, list) else []
+    # Ensure every roster has a players list
+    for r in result:
+        if r.get("players") is None:
+            r["players"] = []
+    return set_cached(rosters_cache, league_id, result)
 
 # ── LEAGUE USERS ──────────────────────────────────────────────────────────────
 
 async def get_league_users(league_id: str) -> list:
     cached = get_cached(league_users_cache, league_id)
-    if cached:
+    if cached is not None:
         return cached
-    data = await _get(f"{BASE_URL}/league/{league_id}/users")
-    return set_cached(league_users_cache, league_id, data or [])
+    try:
+        data = await _get(f"{BASE_URL}/league/{league_id}/users")
+    except Exception:
+        data = []
+    result = data if isinstance(data, list) else []
+    return set_cached(league_users_cache, league_id, result)
 
 # ── MATCHUPS ──────────────────────────────────────────────────────────────────
 

@@ -1141,3 +1141,245 @@ async def get_live_draft(req: UserRequest):
             })
 
     return {"results": results}
+
+# ── STARTER UPGRADES ──────────────────────────────────────────────────────────
+
+@router.post("/analysis/starter-upgrades")
+async def get_starter_upgrades(req: UserRequest):
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+
+    proj_array = await get_projections(season, week)
+    results = []
+
+    for league in leagues:
+        ss = league.get("scoring_settings") or {}
+        proj_map = build_proj_map(proj_array, ss)
+        roster_positions = league.get("roster_positions", [])
+        starter_slots = [s for s in roster_positions if s not in ("BN", "IR", "TAXI")]
+
+        rosters, league_users, matchups = await asyncio.gather(
+            get_rosters(league["league_id"]),
+            get_league_users(league["league_id"]),
+            get_matchups(league["league_id"], week)
+        )
+
+        my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my_roster:
+            continue
+
+        user_lookup = {u["user_id"]: u for u in league_users}
+        my_user = user_lookup.get(user_id)
+        my_team_name = (my_user or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
+
+        my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
+        starter_ids = set(str(pid) for pid in (my_matchup.get("starters", []) if my_matchup else my_roster.get("starters", [])))
+        taxi_ids = set(str(pid) for pid in (my_roster.get("taxi") or []))
+
+        # All rostered players across league (to find FAs)
+        rostered_ids = set()
+        for r in rosters:
+            for pid in (r.get("players") or []):
+                rostered_ids.add(str(pid))
+
+        def enrich(pid, is_starter=False, is_fa=False):
+            p = players_db.get(str(pid))
+            if not p:
+                return None
+            pos = p.get("position", "UNK")
+            if pos not in ("QB", "RB", "WR", "TE", "K", "DEF"):
+                return None
+            return {
+                "id": str(pid),
+                "name": player_name(p),
+                "position": pos,
+                "team": p.get("team", "FA"),
+                "pts": proj_map.get(str(pid), 0),
+                "injury_status": p.get("injury_status"),
+                "is_starter": is_starter,
+                "is_fa": is_fa,
+            }
+
+        my_starters = [p for pid in starter_ids if (p := enrich(pid, is_starter=True)) is not None]
+        my_bench = [p for pid in (my_roster.get("players") or [])
+                    if str(pid) not in starter_ids and str(pid) not in taxi_ids
+                    if (p := enrich(pid)) is not None]
+
+        # Find eligible FAs: in players_db, not rostered, relevant positions
+        RELEVANT_POSITIONS = {"QB", "RB", "WR", "TE", "K", "DEF"}
+        fa_candidates = []
+        for pid, p in players_db.items():
+            if str(pid) in rostered_ids:
+                continue
+            pos = p.get("position", "")
+            if pos not in RELEVANT_POSITIONS:
+                continue
+            pts = proj_map.get(str(pid), 0)
+            if pts < 3:  # skip low-value FAs
+                continue
+            fa_candidates.append({
+                "id": str(pid),
+                "name": player_name(p),
+                "position": pos,
+                "team": p.get("team", "FA"),
+                "pts": pts,
+                "injury_status": p.get("injury_status"),
+                "is_fa": True,
+            })
+        fa_candidates.sort(key=lambda x: -x["pts"])
+        top_fas = fa_candidates[:100]  # limit for performance
+
+        # Find upgrades per starter slot
+        upgrades = []
+        for slot in starter_slots:
+            eligible = SLOT_ELIGIBILITY.get(slot, [slot])
+
+            # Current starter in this slot
+            slot_starter = next((p for p in my_starters if p["position"] in eligible), None)
+            if not slot_starter:
+                continue
+
+            starter_pts = slot_starter["pts"]
+            MIN_GAIN = 1.5
+
+            # Check bench upgrades
+            bench_ups = [p for p in my_bench
+                        if p["position"] in eligible
+                        and p["pts"] > starter_pts + MIN_GAIN]
+            bench_ups.sort(key=lambda x: -x["pts"])
+
+            # Check FA upgrades
+            fa_ups = [p for p in top_fas
+                     if p["position"] in eligible
+                     and p["pts"] > starter_pts + MIN_GAIN]
+            fa_ups.sort(key=lambda x: -x["pts"])
+
+            if bench_ups or fa_ups:
+                upgrades.append({
+                    "slot": slot,
+                    "current_starter": slot_starter,
+                    "bench_upgrades": bench_ups[:2],
+                    "fa_upgrades": fa_ups[:2],
+                })
+
+        results.append({
+            "league": league["name"],
+            "team": my_team_name,
+            "upgrades": upgrades,
+            "starter_count": len(my_starters),
+            "optimal": len(upgrades) == 0,
+        })
+
+    results.sort(key=lambda r: -len(r["upgrades"]))
+    return {"week": week, "results": results}
+
+
+# ── BENCH VS FA ───────────────────────────────────────────────────────────────
+
+@router.post("/analysis/bench-vs-fa")
+async def get_bench_vs_fa(req: UserRequest):
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+
+    proj_array = await get_projections(season, week)
+    results = []
+
+    for league in leagues:
+        ss = league.get("scoring_settings") or {}
+        proj_map = build_proj_map(proj_array, ss)
+
+        rosters, league_users = await asyncio.gather(
+            get_rosters(league["league_id"]),
+            get_league_users(league["league_id"])
+        )
+
+        my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my_roster:
+            continue
+
+        user_lookup = {u["user_id"]: u for u in league_users}
+        my_user = user_lookup.get(user_id)
+        my_team_name = (my_user or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
+
+        starter_ids = set(str(pid) for pid in (my_roster.get("starters") or []))
+        taxi_ids = set(str(pid) for pid in (my_roster.get("taxi") or []))
+
+        # All rostered players
+        rostered_ids = set()
+        for r in rosters:
+            for pid in (r.get("players") or []):
+                rostered_ids.add(str(pid))
+
+        RELEVANT_POSITIONS = {"QB", "RB", "WR", "TE", "K", "DEF"}
+
+        my_bench = []
+        for pid in (my_roster.get("players") or []):
+            if str(pid) in starter_ids or str(pid) in taxi_ids:
+                continue
+            p = players_db.get(str(pid))
+            if not p or p.get("position") not in RELEVANT_POSITIONS:
+                continue
+            my_bench.append({
+                "id": str(pid),
+                "name": player_name(p),
+                "position": p.get("position"),
+                "team": p.get("team", ""),
+                "pts": proj_map.get(str(pid), 0),
+                "injury_status": p.get("injury_status"),
+            })
+        my_bench.sort(key=lambda x: x["pts"])  # weakest first
+
+        # Top FAs by position
+        fa_by_pos = {}
+        for pid, p in players_db.items():
+            if str(pid) in rostered_ids:
+                continue
+            pos = p.get("position", "")
+            if pos not in RELEVANT_POSITIONS:
+                continue
+            pts = proj_map.get(str(pid), 0)
+            if pts < 3:
+                continue
+            if pos not in fa_by_pos:
+                fa_by_pos[pos] = []
+            fa_by_pos[pos].append({
+                "id": str(pid),
+                "name": player_name(p),
+                "position": pos,
+                "team": p.get("team", ""),
+                "pts": pts,
+                "injury_status": p.get("injury_status"),
+            })
+
+        for pos in fa_by_pos:
+            fa_by_pos[pos].sort(key=lambda x: -x["pts"])
+
+        # Find drops: bench players worse than available FAs at same position
+        drops = []
+        MIN_GAIN = 2.0
+        for bench_p in my_bench:
+            pos = bench_p["position"]
+            best_fa = (fa_by_pos.get(pos) or [None])[0]
+            if not best_fa:
+                continue
+            if best_fa["pts"] > bench_p["pts"] + MIN_GAIN:
+                drops.append({
+                    "drop": bench_p,
+                    "add": best_fa,
+                    "gain": round(best_fa["pts"] - bench_p["pts"], 1),
+                })
+
+        drops.sort(key=lambda x: -x["gain"])
+
+        results.append({
+            "league": league["name"],
+            "team": my_team_name,
+            "drops": drops,
+            "bench": my_bench,
+            "optimal": len(drops) == 0,
+        })
+
+    results.sort(key=lambda r: -len(r["drops"]))
+    return {"week": week, "results": results}

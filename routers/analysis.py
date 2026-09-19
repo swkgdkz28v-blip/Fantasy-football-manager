@@ -37,7 +37,7 @@ def enrich_player(pid: str, players_db: dict, proj_map: dict, is_starter: bool) 
         "is_starter": is_starter,
     }
 
-# ââ REQUEST MODELS ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── REQUEST MODELS ────────────────────────────────────────────────────────────
 
 class UserRequest(BaseModel):
     username: str
@@ -52,13 +52,13 @@ class WeekRequest(BaseModel):
     username: str
     week: int
 
-# ââ HEALTH ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── HEALTH ────────────────────────────────────────────────────────────────────
 
 @router.get("/health")
 async def health():
     return {"status": "ok"}
 
-# ââ ALERTS ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── ALERTS ────────────────────────────────────────────────────────────────────
 
 @router.post("/alerts/injured-starters")
 async def get_injured_starters(req: UserRequest):
@@ -179,7 +179,7 @@ async def get_open_starter_spots(req: UserRequest):
 
     return {"results": results}
 
-# ââ WEEK ANALYSIS âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── WEEK ANALYSIS ─────────────────────────────────────────────────────────────
 
 @router.post("/analysis/week")
 async def get_week_analysis(req: WeekRequest):
@@ -257,7 +257,7 @@ async def get_week_analysis(req: WeekRequest):
         starter_slots = [s for s in roster_positions if s not in ("BN", "IR", "TAXI")]
         taxi_ids = set(my_roster.get("taxi") or [])
         all_players = []
-        for pid in my_roster.get("players", []):
+        for pid in (my_roster.get("players") or []):
             if str(pid) in taxi_ids:
                 continue
             p = players_db.get(str(pid))
@@ -302,7 +302,7 @@ async def get_week_analysis(req: WeekRequest):
 
     return {"week": week, "results": results}
 
-# ââ WEEK RECORD âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── WEEK RECORD ───────────────────────────────────────────────────────────────
 
 @router.post("/analysis/week-record")
 async def get_week_record(req: WeekRequest):
@@ -373,7 +373,7 @@ async def get_week_record(req: WeekRequest):
 
     return {"week": week, "week_completed": week_completed, "results": results}
 
-# ââ THERE'S A CHANCE ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── THERE'S A CHANCE ──────────────────────────────────────────────────────────
 
 @router.post("/analysis/theres-a-chance")
 async def get_theres_a_chance(req: UserRequest):
@@ -492,7 +492,7 @@ async def get_theres_a_chance(req: UserRequest):
     results.sort(key=lambda r: status_order.get(r["status"], 9))
     return {"results": results, "skipped": skipped}
 
-# ââ OPTIMAL LINEUP ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── OPTIMAL LINEUP ────────────────────────────────────────────────────────────
 
 @router.post("/analysis/optimal-lineup")
 async def get_optimal_lineup(req: UserRequest):
@@ -529,7 +529,7 @@ async def get_optimal_lineup(req: UserRequest):
 
         taxi_ids = set(my_roster.get("taxi") or [])
         pool = []
-        for pid in my_roster.get("players", []):
+        for pid in (my_roster.get("players") or []):
             if str(pid) in taxi_ids:
                 continue
             p = players_db.get(str(pid))
@@ -589,7 +589,7 @@ async def get_optimal_lineup(req: UserRequest):
 
     return {"week": week, "results": results, "optimal_leagues": optimal_leagues}
 
-# ââ MY POSITION NEEDS âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── MY POSITION NEEDS ─────────────────────────────────────────────────────────
 
 @router.post("/analysis/position-needs")
 async def get_position_needs(req: UserRequest):
@@ -680,7 +680,7 @@ async def get_position_needs(req: UserRequest):
                 format_notes.append(f"+{sf_count} Super Flex")
             if pos == "QB" and dedicated_slots["QB"] >= 2:
                 format_notes.append("2QB league")
-            flex_types = [f"{v['count']}Ã {ft}" if v['count'] > 1 else ft
+            flex_types = [f"{v['count']}× {ft}" if v['count'] > 1 else ft
                          for ft, v in flex_slots_by_type.items() if pos in v["eligible"]]
             if flex_types:
                 format_notes.append(", ".join(flex_types))
@@ -697,7 +697,7 @@ async def get_position_needs(req: UserRequest):
 
     return {"needs_by_pos": {k: v for k, v in needs_by_pos.items() if v}}
 
-# ââ UPGRADE RECOMMENDATIONS âââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── UPGRADE RECOMMENDATIONS ───────────────────────────────────────────────────
 
 @router.post("/analysis/upgrade-recommendations")
 async def get_upgrade_recommendations(req: UserRequest):
@@ -798,7 +798,7 @@ async def get_upgrade_recommendations(req: UserRequest):
 
     return {"week": week, "results": results}
 
-# ââ OVERVIEW (Contender + Strategy) âââââââââââââââââââââââââââââââââââââââââââ
+# ── OVERVIEW (Contender + Strategy) ───────────────────────────────────────────
 
 @router.post("/analysis/overview")
 async def get_overview(req: UserRequest):
@@ -903,30 +903,30 @@ async def get_overview(req: UserRequest):
 
         # Tier
         if composite > 4.0:
-            tier, tier_color, tier_icon = "Juggernaut", "#00e5a0", "ð"
+            tier, tier_color, tier_icon = "Juggernaut", "#00e5a0", "👑"
         elif composite > 3.0:
-            tier, tier_color, tier_icon = "Contender", "#5c9eff", "ð"
+            tier, tier_color, tier_icon = "Contender", "#5c9eff", "🏆"
         elif composite > 2.0:
-            tier, tier_color, tier_icon = "Fringe", "#ffb347", "â¡"
+            tier, tier_color, tier_icon = "Fringe", "#ffb347", "⚡"
         else:
-            tier, tier_color, tier_icon = "Rebuild", "#ff5c5c", "ð¨"
+            tier, tier_color, tier_icon = "Rebuild", "#ff5c5c", "🔨"
 
         # Strategy
         if composite > 4.0 or (composite > 3.0 and record_score >= 4):
-            strategy, strat_color, strat_icon = "Win Now", "#00e5a0", "ð¥"
-            strat_actions = ["Trade depth and picks for proven starters", "Target aging veterans who want to win now", "Prioritize win-now FAs over upside fliers", "Don't hoard picks â use them as currency"]
+            strategy, strat_color, strat_icon = "Win Now", "#00e5a0", "🔥"
+            strat_actions = ["Trade depth and picks for proven starters", "Target aging veterans who want to win now", "Prioritize win-now FAs over upside fliers", "Don't hoard picks — use them as currency"]
         elif composite > 3.0 and record_score < 3:
-            strategy, strat_color, strat_icon = "Sell High", "#5c9eff", "ð"
-            strat_actions = ["Your roster is stronger than your record â trade from hidden strength", "Other teams undervalue you right now â capitalize", "Sell players at peak value before the market corrects", "Look to acquire assets from teams overrating their hot start"]
+            strategy, strat_color, strat_icon = "Sell High", "#5c9eff", "📈"
+            strat_actions = ["Your roster is stronger than your record — trade from hidden strength", "Other teams undervalue you right now — capitalize", "Sell players at peak value before the market corrects", "Look to acquire assets from teams overrating their hot start"]
         elif composite <= 2.0:
-            strategy, strat_color, strat_icon = "Full Rebuild", "#ff5c5c", "ð¨"
+            strategy, strat_color, strat_icon = "Full Rebuild", "#ff5c5c", "🔨"
             strat_actions = ["Sell aging veterans (28+) for picks or young players", "Acquire as many first round picks as possible", "Target youth with high upside on waivers", "Don't trade future picks for win-now pieces"]
         elif composite > 2.0 and record_score >= 4:
-            strategy, strat_color, strat_icon = "Trust the Process", "#ff8c42", "â³"
-            strat_actions = ["Your record is outpacing your roster â be cautious", "Don't overpay to win now on a middling roster", "Sell high on players performing above projection", "Build depth while momentum is with you"]
+            strategy, strat_color, strat_icon = "Trust the Process", "#ff8c42", "⏳"
+            strat_actions = ["Your record is outpacing your roster — be cautious", "Don't overpay to win now on a middling roster", "Sell high on players performing above projection", "Build depth while momentum is with you"]
         else:
-            strategy, strat_color, strat_icon = "Patience", "#ffb347", "ð¯"
-            strat_actions = ["Identify your 1-2 weakest positions and target specific upgrades", "Avoid trading multiple picks for one player", "Stay active on waivers â consistency beats big swings", "Monitor contenders for buy-low opportunities after losses"]
+            strategy, strat_color, strat_icon = "Patience", "#ffb347", "🎯"
+            strat_actions = ["Identify your 1-2 weakest positions and target specific upgrades", "Avoid trading multiple picks for one player", "Stay active on waivers — consistency beats big swings", "Monitor contenders for buy-low opportunities after losses"]
 
         scores = {"Roster": roster_score, "Draft": draft_score, "Age": age_score, "Depth": depth_score, "Record": record_score}
         results.append({
@@ -953,7 +953,7 @@ async def get_overview(req: UserRequest):
     results.sort(key=lambda r: {"Win Now": 0, "Sell High": 1, "Patience": 2, "Trust the Process": 3, "Full Rebuild": 4}.get(r["strategy"], 9))
     return {"results": results}
 
-# ââ SEASON FORECAST âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── SEASON FORECAST ───────────────────────────────────────────────────────────
 
 @router.post("/analysis/season-forecast")
 async def get_season_forecast(req: UserRequest):
@@ -1013,7 +1013,7 @@ async def get_season_forecast(req: UserRequest):
 
     return {"results": results}
 
-# ââ DRAFT DATA ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── DRAFT DATA ────────────────────────────────────────────────────────────────
 
 @router.post("/analysis/draft-picks")
 async def get_draft_picks(req: UserRequest):

@@ -261,39 +261,57 @@ body {
   border-radius: var(--radius-sm);
   margin-bottom: 5px;
 }
+/* ── ACCORDION NAV ── */
+.accordion { border-bottom: 1px solid var(--border); }
+.accordion-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+  background: var(--surface);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text3);
+  border: none;
+  width: 100%;
+  text-align: left;
+}
+.accordion-header:active { background: var(--surface2); }
+.accordion-chevron { font-size: 10px; transition: transform 0.2s; }
+.accordion-chevron.open { transform: rotate(180deg); }
+.accordion-body { background: var(--bg); }
+.accordion-btn {
+  display: block;
+  width: 100%;
+  padding: 11px 20px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text2);
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.accordion-btn:active { background: var(--surface2); }
+.accordion-btn.active { color: var(--accent); background: rgba(0,229,160,0.06); border-left: 3px solid var(--accent); }
+
 /* ── MOBILE ── */
 @media (max-width: 768px) {
   .sidebar { display: none; }
-  .mobile-nav {
-    display: flex;
-    overflow-x: auto;
-    padding: 8px 12px;
-    gap: 6px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    scrollbar-width: none;
-  }
-  .mobile-nav::-webkit-scrollbar { display: none; }
-  .mobile-btn {
-    flex-shrink: 0;
-    padding: 6px 12px;
-    border-radius: 20px;
-    font-size: 11px;
-    font-weight: 600;
-    border: 1px solid var(--border);
-    background: var(--surface2);
-    color: var(--text2);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .mobile-btn.active { background: var(--accent); color: #0d0f14; border-color: var(--accent); }
+  .mobile-accordion { display: block; border-top: 1px solid var(--border); }
   .main-content { padding: 12px; }
   .config-panel { flex-direction: column; align-items: flex-start; }
   .config-field input, .config-field input.short { width: 100%; }
   .grid-2 { grid-template-columns: 1fr; }
 }
 @media (min-width: 769px) {
-  .mobile-nav { display: none; }
+  .mobile-accordion { display: none; }
 }
 /* ── RADAR SVG ── */
 .radar-wrap { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 12px; }
@@ -736,8 +754,50 @@ const SECTIONS = [
 ];
 
 // ── APP ───────────────────────────────────────────────────────────────────────
+// ── MOBILE ACCORDION NAV ─────────────────────────────────────────────────────
+function MobileAccordion({ sections, active, onRun }) {
+  const [openSections, setOpenSections] = useState(() => {
+    // Start with the section containing the active feature open, or first section
+    const initial = new Set();
+    initial.add(sections[0]?.label);
+    return initial;
+  });
+
+  const toggle = (label) => {
+    setOpenSections(prev => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  };
+
+  return e('div', { className: 'mobile-accordion' },
+    sections.map(section =>
+      e('div', { key: section.label, className: 'accordion' },
+        e('button', {
+          className: 'accordion-header',
+          onClick: () => toggle(section.label),
+        },
+          e('span', null, section.label),
+          e('span', { className: `accordion-chevron${openSections.has(section.label) ? ' open' : ''}` }, '▼')
+        ),
+        openSections.has(section.label) && e('div', { className: 'accordion-body' },
+          section.features.map(f =>
+            e('button', {
+              key: f.id,
+              className: `accordion-btn${active === f.id ? ' active' : ''}`,
+              onClick: () => onRun(f),
+            }, f.label)
+          )
+        )
+      )
+    )
+  );
+}
+
 function App() {
-  const [username, setUsername] = useState('MattSB');
+  const [username, setUsername] = useState('');
   const [leagueName, setLeagueName] = useState('');
   const [week, setWeek] = useState('');
   const [active, setActive] = useState(null);
@@ -816,10 +876,8 @@ function App() {
       )
     ),
 
-    // Mobile nav
-    e('div', { className: 'mobile-nav' },
-      allFeatures.map(f => e('button', { key: f.id, className: `mobile-btn${active === f.id ? ' active' : ''}`, onClick: () => run(f) }, f.label))
-    ),
+    // Mobile accordion nav
+    e(MobileAccordion, { sections: SECTIONS, active, onRun: run }),
 
     // Body
     e('div', { className: 'app-body' },

@@ -698,6 +698,323 @@ function PositionNeedsView({ data }) {
   );
 }
 
+
+
+// ── STARTER UPGRADES VIEW ─────────────────────────────────────────────────────
+function StarterUpgradesView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
+  const needsWork = data.results.filter(r => r.upgrades?.length > 0);
+  const optimal = data.results.filter(r => r.optimal);
+
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: needsWork.length, label: 'Need Changes', color: 'var(--accent3)' }),
+      e(StatTile, { value: optimal.length, label: 'Optimal', color: 'var(--accent)' })
+    ),
+    needsWork.map(r => e(Card, { key: r.league, borderColor: 'var(--accent3)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e(Tag, { color: 'orange' }, `${r.upgrades.length} slot${r.upgrades.length > 1 ? 's' : ''} to upgrade`)
+      ),
+      r.upgrades.map((u, i) => e('div', { key: i, style: { marginBottom: 14 } },
+        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6 } },
+          `${u.slot} · Currently: ${u.current_starter.name} (${u.current_starter.pts} pts)`
+        ),
+        u.bench_upgrades.map(p => e('div', { key: p.id, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'rgba(0,229,160,0.06)', border: '1px solid rgba(0,229,160,0.3)', borderRadius: 8, marginBottom: 4 } },
+          e(PosBadge, { pos: p.position }),
+          e('div', { style: { flex: 1 } },
+            e('div', { style: { fontSize: 12, fontWeight: 700 } }, p.name),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${p.team} · On your bench`)
+          ),
+          e('div', { style: { textAlign: 'right' } },
+            e('div', { style: { fontSize: 13, fontWeight: 700, color: 'var(--accent)' } }, p.pts),
+            e('div', { style: { fontSize: 10, color: 'var(--accent)' } }, `+${(p.pts - u.current_starter.pts).toFixed(1)}`)
+          )
+        )),
+        u.fa_upgrades.map(p => e('div', { key: p.id, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'rgba(92,158,255,0.06)', border: '1px solid rgba(92,158,255,0.3)', borderRadius: 8, marginBottom: 4 } },
+          e(PosBadge, { pos: p.position }),
+          e('div', { style: { flex: 1 } },
+            e('div', { style: { fontSize: 12, fontWeight: 700 } }, p.name),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${p.team} · Free Agent`)
+          ),
+          e('div', { style: { textAlign: 'right' } },
+            e('div', { style: { fontSize: 13, fontWeight: 700, color: 'var(--accent4)' } }, p.pts),
+            e('div', { style: { fontSize: 10, color: 'var(--accent4)' } }, `+${(p.pts - u.current_starter.pts).toFixed(1)}`)
+          )
+        ))
+      ))
+    )),
+    optimal.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontWeight: 700 } }, `✅ Optimal Lineups (${optimal.length})`),
+      optimal.map(l => e('div', { key: l.league, style: { fontSize: 12, padding: '4px 0', borderBottom: '1px solid var(--border)' } }, l.league))
+    )
+  );
+}
+
+// ── BENCH VS FA VIEW ──────────────────────────────────────────────────────────
+function BenchVsFaView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
+  const hasDrop = data.results.filter(r => r.drops?.length > 0);
+  const optimal = data.results.filter(r => r.optimal);
+
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: hasDrop.length, label: 'Leagues w/ Drops', color: 'var(--accent3)' }),
+      e(StatTile, { value: hasDrop.reduce((s,r) => s + r.drops.length, 0), label: 'Total Drops', color: 'var(--accent2)' }),
+      e(StatTile, { value: optimal.length, label: 'Roster Fine', color: 'var(--accent)' })
+    ),
+    hasDrop.map(r => e(Card, { key: r.league, borderColor: 'var(--accent2)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e(Tag, { color: 'red' }, `${r.drops.length} drop${r.drops.length > 1 ? 's' : ''}`)
+      ),
+      r.drops.map((d, i) => e('div', { key: i, className: 'swap-card', style: { marginBottom: 6 } },
+        e('div', null,
+          e('div', { style: { fontSize: 9, color: 'var(--accent2)', fontWeight: 700, marginBottom: 4 } }, '✂ DROP'),
+          e('div', { style: { display: 'flex', alignItems: 'center', gap: 5 } },
+            e(PosBadge, { pos: d.drop.position }),
+            e('div', null,
+              e('div', { style: { fontSize: 12, fontWeight: 600 } }, d.drop.name),
+              e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${d.drop.team} · ${d.drop.pts} pts`)
+            )
+          )
+        ),
+        e('div', { style: { textAlign: 'center' } },
+          e('div', { style: { fontSize: 11, fontWeight: 700, color: 'var(--accent)' } }, `+${d.gain}`),
+          e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'gain')
+        ),
+        e('div', null,
+          e('div', { style: { fontSize: 9, color: 'var(--accent)', fontWeight: 700, marginBottom: 4 } }, '➕ ADD'),
+          e('div', { style: { display: 'flex', alignItems: 'center', gap: 5 } },
+            e(PosBadge, { pos: d.add.position }),
+            e('div', null,
+              e('div', { style: { fontSize: 12, fontWeight: 600 } }, d.add.name),
+              e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${d.add.team} · ${d.add.pts} pts`)
+            )
+          )
+        )
+      ))
+    )),
+    optimal.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontWeight: 700 } }, `✅ Roster Fine (${optimal.length})`),
+      optimal.map(l => e('div', { key: l.league, style: { fontSize: 12, padding: '4px 0', borderBottom: '1px solid var(--border)' } }, l.league))
+    )
+  );
+}
+
+// ── WEEK ANALYSIS VIEW ────────────────────────────────────────────────────────
+function WeekAnalysisView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No matchup data found.'));
+  const wins = data.results.filter(r => r.won).length;
+  const losses = data.results.filter(r => !r.won && !r.tied).length;
+  const ties = data.results.filter(r => r.tied).length;
+
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: `${wins}-${losses}${ties ? `-${ties}` : ''}`, label: 'Record', color: 'var(--accent)' }),
+      e(StatTile, { value: data.results.reduce((s,r) => s + (r.my_pts||0), 0).toFixed(1), label: 'Total Pts', color: 'var(--accent4)' }),
+      e(StatTile, { value: data.results.filter(r => (r.optimal_gain||0) > 2).length, label: 'Lineup Issues', color: 'var(--accent3)' })
+    ),
+    data.results.map(r => {
+      const winColor = r.won ? 'var(--accent)' : r.tied ? 'var(--accent3)' : 'var(--accent2)';
+      return e(Card, { key: r.league, borderColor: winColor },
+        e('div', { className: 'card-header' },
+          e('div', null,
+            e('div', { className: 'card-title' }, r.league),
+            e('div', { className: 'card-subtitle' }, `vs ${r.opp_name}`)
+          ),
+          e('div', { style: { textAlign: 'right' } },
+            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', color: winColor } },
+              `${r.my_pts?.toFixed(2)} – ${r.opp_pts?.toFixed(2)}`
+            ),
+            e('div', { style: { fontSize: 11, color: winColor, fontWeight: 700 } }, r.won ? '✅ WIN' : r.tied ? '🤝 TIE' : '❌ LOSS'),
+            r.optimal_gain > 2 && e('div', { style: { fontSize: 10, color: 'var(--accent3)' } }, `+${r.optimal_gain?.toFixed(1)} left on bench`)
+          )
+        ),
+        r.my_starters?.length > 0 && e('div', null,
+          e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6 } }, 'Your Starters'),
+          r.my_starters.map(p => {
+            const ptColor = p.pts >= 20 ? 'var(--accent)' : p.pts >= 10 ? 'var(--text2)' : 'var(--accent2)';
+            return e('div', { key: p.id, className: 'player-row' },
+              e(PosBadge, { pos: p.position }),
+              e('span', { className: 'player-name' }, p.name),
+              e('span', { className: 'player-team' }, p.team),
+              e('span', { className: 'player-pts', style: { color: ptColor } }, p.pts?.toFixed(2))
+            );
+          })
+        )
+      );
+    })
+  );
+}
+
+// ── UPGRADE RECS VIEW ─────────────────────────────────────────────────────────
+function UpgradeRecsView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
+  const hasUpgrades = data.results.filter(r => r.should_start?.length > 0);
+  const optimal = data.results.filter(r => !r.should_start?.length);
+
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: hasUpgrades.length, label: 'Need Changes', color: 'var(--accent3)' }),
+      e(StatTile, { value: optimal.length, label: 'Optimal', color: 'var(--accent)' })
+    ),
+    hasUpgrades.map(r => e(Card, { key: r.league, borderColor: 'var(--accent3)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.4rem', color: 'var(--accent3)' } }, `+${r.gain?.toFixed(1)}`),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'pts gain')
+        )
+      ),
+      e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent3)', marginBottom: 6 } }, '🔄 Recommended Swaps'),
+      r.should_start?.map((p, i) => {
+        const benched = r.should_bench?.[i];
+        return e('div', { key: p.id, className: 'swap-card' },
+          e('div', null,
+            e('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 } },
+              e(PosBadge, { pos: p.position }),
+              e('span', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent)' } }, `START`)
+            ),
+            e('div', { style: { fontSize: 12, fontWeight: 600 } }, p.name),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${p.team} · ${p.week_pts} proj · ${p.ytd_avg} avg`)
+          ),
+          e('div', { style: { textAlign: 'center', fontSize: 18, color: 'var(--text3)' } }, '⇄'),
+          benched ? e('div', null,
+            e('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 } },
+              e(PosBadge, { pos: benched.position }),
+              e('span', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent2)' } }, `BENCH`)
+            ),
+            e('div', { style: { fontSize: 12, fontWeight: 600 } }, benched.name),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${benched.team} · ${benched.week_pts} proj · ${benched.ytd_avg} avg`)
+          ) : e('div', null)
+        );
+      })
+    )),
+    optimal.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontWeight: 700 } }, `✅ Already Optimal (${optimal.length})`),
+      optimal.map(l => e('div', { key: l.league, style: { display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid var(--border)', fontSize: 12 } },
+        e('span', null, l.league),
+        e('span', { style: { color: 'var(--accent)', fontWeight: 700 } }, `${l.optimal_pts?.toFixed(1)} pts`)
+      ))
+    )
+  );
+}
+
+// ── SEASON FORECAST VIEW ──────────────────────────────────────────────────────
+function SeasonForecastView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
+  return e('div', null,
+    e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 12 } }, 'PROJECTED FINAL RECORDS'),
+    data.results.map(r => {
+      const projWinPct = r.proj_wins / Math.max(r.proj_wins + r.proj_losses, 1);
+      const barColor = projWinPct >= 0.6 ? 'var(--accent)' : projWinPct >= 0.45 ? 'var(--accent3)' : 'var(--accent2)';
+      return e('div', { key: r.league, style: { marginBottom: 12, padding: '12px 14px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${barColor}`, borderRadius: 10 } },
+        e('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: 6 } },
+          e('div', null,
+            e('div', { style: { fontWeight: 700, fontSize: 14 } }, r.league),
+            e('div', { style: { fontSize: 11, color: 'var(--text2)', marginTop: 2 } }, `Current: ${r.current_record}`)
+          ),
+          e('div', { style: { textAlign: 'right' } },
+            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.4rem', color: barColor } }, r.projected_record),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'projected final')
+          )
+        ),
+        e('div', { className: 'bar-track', style: { height: 8 } },
+          e('div', { className: 'bar-fill', style: { width: `${projWinPct * 100}%`, background: barColor } })
+        ),
+        e('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text3)', marginTop: 4 } },
+          e('span', null, `${r.weeks_remaining} weeks remaining`),
+          e('span', null, `${r.my_proj_score} proj pts/wk`)
+        )
+      );
+    })
+  );
+}
+
+// ── DRAFT PICKS VIEW ──────────────────────────────────────────────────────────
+function DraftPicksView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No draft pick data found.'));
+  const total = data.results.reduce((s, r) => s + (r.upcoming_picks?.length || 0), 0);
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: total, label: 'Total Picks', color: 'var(--accent4)' }),
+      e(StatTile, { value: data.results.filter(r => r.upcoming_picks?.length).length, label: 'Leagues', color: 'var(--text2)' })
+    ),
+    data.results.map(r => e(Card, { key: r.league },
+      e('div', { className: 'card-title', style: { marginBottom: 10 } }, r.league),
+      r.upcoming_picks?.length === 0
+        ? e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, 'No upcoming picks')
+        : e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
+            r.upcoming_picks.map((p, i) => e('div', { key: i, style: { padding: '6px 12px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 } },
+              e('div', { style: { fontWeight: 700, color: 'var(--accent4)' } }, `Round ${p.round}`),
+              e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${p.season} · From ${p.original_owner}`)
+            ))
+          )
+    ))
+  );
+}
+
+// ── DRAFT DATES VIEW ──────────────────────────────────────────────────────────
+function DraftDatesView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No draft data found.'));
+  const STATUS_COLOR = { drafting: 'var(--accent2)', paused: 'var(--accent3)', pre_draft: 'var(--accent4)', complete: 'var(--text3)' };
+  const STATUS_LABEL = { drafting: '🔴 In Progress', paused: '⏸ Paused', pre_draft: '📅 Scheduled', complete: '✅ Complete' };
+  const grouped = {};
+  data.results.forEach(r => {
+    const s = r.status || 'unknown';
+    if (!grouped[s]) grouped[s] = [];
+    grouped[s].push(r);
+  });
+  const statusOrder = ['drafting', 'paused', 'pre_draft', 'complete'];
+
+  return e('div', null,
+    statusOrder.filter(s => grouped[s]).map(status =>
+      e('div', { key: status, style: { marginBottom: 16 } },
+        e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: STATUS_COLOR[status] || 'var(--text3)', marginBottom: 8 } }, STATUS_LABEL[status] || status.toUpperCase()),
+        grouped[status].map(r => e('div', { key: r.draft_id, style: { padding: '10px 14px', background: 'var(--surface)', border: `1px solid ${STATUS_COLOR[status] || 'var(--border)'}`, borderRadius: 10, marginBottom: 6 } },
+          e('div', { style: { fontWeight: 700, fontSize: 13 } }, r.league),
+          e('div', { style: { fontSize: 11, color: 'var(--text3)', marginTop: 3 } },
+            r.type ? `${r.type} · ` : '',
+            r.start_time ? new Date(r.start_time).toLocaleString() : 'Date TBD'
+          )
+        ))
+      )
+    )
+  );
+}
+
+// ── LIVE DRAFT VIEW ───────────────────────────────────────────────────────────
+function LiveDraftView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info', title: 'No Active Drafts' }, e('p', null, 'No drafts currently in progress across your leagues.'));
+  return e('div', null,
+    data.results.map(r => e(Card, { key: r.draft_id, borderColor: 'var(--accent2)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), e('div', { className: 'card-subtitle' }, r.status === 'drafting' ? '🔴 Live' : '⏸ Paused')),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.4rem', color: 'var(--accent2)' } }, `Pick ${r.current_pick}`),
+          e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, `On clock: ${r.picks_on_clock}`)
+        )
+      ),
+      r.my_next_picks?.length > 0 && e('div', { style: { padding: '10px 12px', background: 'rgba(0,229,160,0.06)', border: '1px solid rgba(0,229,160,0.25)', borderRadius: 8, marginBottom: 12 } },
+        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 5 } }, 'Your Next Picks'),
+        e('div', { style: { display: 'flex', gap: 8 } },
+          r.my_next_picks.map(pick => e('div', { key: pick, style: { padding: '6px 14px', background: 'var(--surface2)', borderRadius: 20, fontSize: 13, fontWeight: 700, color: 'var(--accent)' } }, `#${pick}`))
+        )
+      ),
+      r.recent_picks?.length > 0 && e('div', null,
+        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6 } }, 'Recent Picks'),
+        r.recent_picks.map(p => e('div', { key: p.pick_no, className: 'player-row' },
+          e('span', { style: { fontSize: 10, color: 'var(--text3)', minWidth: 32 } }, `#${p.pick_no}`),
+          p.position && e(PosBadge, { pos: p.position }),
+          e('span', { className: 'player-name' }, p.player_name),
+          e('span', { style: { fontSize: 10, color: 'var(--text3)' } }, p.picked_by ? `by ${p.picked_by}` : '')
+        ))
+      )
+    ))
+  );
+}
+
 function GenericView({ data, title }) {
   return e('pre', { style: { fontSize: 11, color: 'var(--text2)', overflow: 'auto', whiteSpace: 'pre-wrap' } }, JSON.stringify(data, null, 2));
 }
@@ -726,6 +1043,8 @@ const SECTIONS = [
     features: [
       { id: 'optimal', label: '⚡ Optimal Lineup', endpoint: '/analysis/optimal-lineup' },
       { id: 'upgrade', label: '🔼 Upgrade Recs', endpoint: '/analysis/upgrade-recommendations' },
+      { id: 'starter-upgrades', label: '⬆ Starter Upgrades', endpoint: '/analysis/starter-upgrades' },
+      { id: 'bench-vs-fa', label: '🔄 Bench vs FA', endpoint: '/analysis/bench-vs-fa' },
       { id: 'position-needs', label: '📍 My Position Needs', endpoint: '/analysis/position-needs' },
     ]
   },
@@ -843,6 +1162,22 @@ function App() {
         return e(OverviewView, { data });
       case 'position-needs':
         return e(PositionNeedsView, { data });
+      case 'week-analysis':
+        return e(WeekAnalysisView, { data });
+      case 'upgrade':
+        return e(UpgradeRecsView, { data });
+      case 'season-forecast':
+        return e(SeasonForecastView, { data });
+      case 'draft-picks':
+        return e(DraftPicksView, { data });
+      case 'draft-dates':
+        return e(DraftDatesView, { data });
+      case 'live-draft':
+        return e(LiveDraftView, { data });
+      case 'starter-upgrades':
+        return e(StarterUpgradesView, { data });
+      case 'bench-vs-fa':
+        return e(BenchVsFaView, { data });
       default:
         return e(GenericView, { data, title: feature.label });
     }

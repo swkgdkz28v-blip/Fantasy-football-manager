@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fantasy Manager v10</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0d0f14;
+  --surface: #13161e;
+  --surface2: #1a1d27;
+  --border: rgba(255,255,255,0.08);
+  --accent: #00e5a0;
+  --accent2: #ff5c5c;
+  --accent3: #ffb347;
+  --accent4: #5c9eff;
+  --purple: #a07cff;
+  --text: #ffffff;
+  --text2: #c8cdd8;
+  --text3: #8b91a8;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding-top: var(--safe-top);
+  padding-bottom: var(--safe-bottom);
+  overflow-x: hidden;
+}
+/* ── LAYOUT ── */
+#root { display: flex; flex-direction: column; min-height: 100vh; }
+.app-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.app-title {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 1.4rem;
+  letter-spacing: 2px;
+  color: var(--accent);
+}
+.app-version { font-size: 10px; color: var(--text3); margin-left: 6px; }
+.app-body { display: flex; flex: 1; }
+.sidebar {
+  width: 260px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 12px;
+  overflow-y: auto;
+  flex-shrink: 0;
+  height: calc(100vh - 53px);
+  position: sticky;
+  top: 53px;
+}
+.main-content {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+  min-width: 0;
+}
+/* ── CONFIG PANEL ── */
+.config-panel {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.config-field { display: flex; flex-direction: column; gap: 3px; }
+.config-field label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text3); }
+.config-field input {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: 'Inter', sans-serif;
+  width: 140px;
+}
+.config-field input:focus { outline: none; border-color: var(--accent4); }
+.config-field input.short { width: 70px; }
+/* ── SECTION LABELS ── */
+.section-label {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 0.75rem;
+  letter-spacing: 2px;
+  color: var(--text3);
+  padding: 14px 4px 6px;
+  text-transform: uppercase;
+}
+/* ── BUTTONS ── */
+.btn {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: opacity 0.15s, transform 0.1s;
+  margin-bottom: 4px;
+}
+.btn:hover { opacity: 0.85; }
+.btn:active { transform: scale(0.98); }
+.btn-green { background: rgba(0,229,160,0.15); color: var(--accent); border: 1px solid rgba(0,229,160,0.3); }
+.btn-blue { background: rgba(92,158,255,0.15); color: var(--accent4); border: 1px solid rgba(92,158,255,0.3); }
+.btn-red { background: rgba(255,92,92,0.15); color: var(--accent2); border: 1px solid rgba(255,92,92,0.3); }
+.btn-orange { background: rgba(255,179,71,0.15); color: var(--accent3); border: 1px solid rgba(255,179,71,0.3); }
+.btn-purple { background: rgba(160,124,255,0.15); color: var(--purple); border: 1px solid rgba(160,124,255,0.3); }
+.btn-active { ring: 2px solid var(--accent); }
+/* ── CARDS ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+.card-title { font-size: 15px; font-weight: 700; }
+.card-subtitle { font-size: 12px; color: var(--text2); margin-top: 2px; }
+/* ── TAGS ── */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.tag-green { background: rgba(0,229,160,0.15); color: var(--accent); }
+.tag-red { background: rgba(255,92,92,0.15); color: var(--accent2); }
+.tag-orange { background: rgba(255,179,71,0.15); color: var(--accent3); }
+.tag-blue { background: rgba(92,158,255,0.15); color: var(--accent4); }
+.tag-gray { background: rgba(255,255,255,0.08); color: var(--text3); }
+/* ── POS BADGES ── */
+.pos {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 20px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+.pos-QB { background: #1a3a6b; color: #5c9eff; }
+.pos-RB { background: #0d3326; color: #00e5a0; }
+.pos-WR { background: #2a1a4a; color: #a07cff; }
+.pos-TE { background: #3a2a0a; color: #ffb347; }
+.pos-K  { background: #3a0a0a; color: #ff5c5c; }
+.pos-DEF{ background: #1a1a3a; color: #8b91a8; }
+/* ── STAT TILES ── */
+.stat-row { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.stat-tile {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  flex: 1;
+  min-width: 80px;
+  text-align: center;
+}
+.stat-tile .val {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 1.8rem;
+  line-height: 1;
+}
+.stat-tile .lbl { font-size: 10px; color: var(--text3); margin-top: 3px; text-transform: uppercase; letter-spacing: 1px; }
+/* ── BAR ── */
+.bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.bar-label { font-size: 10px; color: var(--text3); width: 44px; flex-shrink: 0; }
+.bar-track { flex: 1; height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+.bar-score { font-size: 10px; font-weight: 700; width: 14px; text-align: right; }
+/* ── PLAYER ROW ── */
+.player-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 3px;
+}
+.player-name { font-size: 12px; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player-team { font-size: 10px; color: var(--text3); }
+.player-pts { font-size: 12px; font-weight: 700; }
+/* ── ALERTS ── */
+.alert {
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  border-left: 4px solid;
+}
+.alert-success { background: rgba(0,229,160,0.08); border-color: var(--accent); }
+.alert-error { background: rgba(255,92,92,0.08); border-color: var(--accent2); }
+.alert-info { background: rgba(92,158,255,0.08); border-color: var(--accent4); }
+.alert h3 { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+.alert p { font-size: 13px; color: var(--text2); }
+/* ── LOADING ── */
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  color: var(--text3);
+}
+.spinner {
+  width: 32px; height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 14px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-msg { font-size: 13px; color: var(--text3); }
+/* ── GRID ── */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+/* ── SWAP CARD ── */
+.swap-card {
+  display: grid;
+  grid-template-columns: 1fr 28px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  background: rgba(255,179,71,0.05);
+  border: 1px solid rgba(255,179,71,0.25);
+  border-radius: var(--radius-sm);
+  margin-bottom: 5px;
+}
+/* ── MOBILE ── */
+@media (max-width: 768px) {
+  .sidebar { display: none; }
+  .mobile-nav {
+    display: flex;
+    overflow-x: auto;
+    padding: 8px 12px;
+    gap: 6px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    scrollbar-width: none;
+  }
+  .mobile-nav::-webkit-scrollbar { display: none; }
+  .mobile-btn {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text2);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .mobile-btn.active { background: var(--accent); color: #0d0f14; border-color: var(--accent); }
+  .main-content { padding: 12px; }
+  .config-panel { flex-direction: column; align-items: flex-start; }
+  .config-field input, .config-field input.short { width: 100%; }
+  .grid-2 { grid-template-columns: 1fr; }
+}
+@media (min-width: 769px) {
+  .mobile-nav { display: none; }
+}
+/* ── RADAR SVG ── */
+.radar-wrap { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 12px; }
+.radar-wrap svg { flex-shrink: 0; }
+/* ── EMPTY ── */
+.empty { padding: 40px 20px; text-align: center; color: var(--text3); font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const { useState, useEffect, useCallback, useRef } = React;
+const e = React.createElement;
+
+// ── API ───────────────────────────────────────────────────────────────────────
+const API = {
+  post: async (path, body) => {
+    const r = await fetch(`/api${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`API error: ${r.status}`);
+    return r.json();
+  },
+};
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+const POS_CLASS = pos => ({ QB:'pos-QB', RB:'pos-RB', WR:'pos-WR', TE:'pos-TE', K:'pos-K', DEF:'pos-DEF' }[pos] || '');
+const POS_COLORS = { QB:'var(--accent4)', RB:'var(--accent)', WR:'var(--purple)', TE:'var(--accent3)', K:'var(--accent2)', DEF:'var(--text3)' };
+
+function PosBadge({ pos }) {
+  return e('span', { className: `pos ${POS_CLASS(pos)}` }, pos);
+}
+
+function Tag({ color, children }) {
+  return e('span', { className: `tag tag-${color}` }, children);
+}
+
+function Card({ children, style, borderColor }) {
+  return e('div', {
+    className: 'card',
+    style: { ...(borderColor ? { borderLeft: `3px solid ${borderColor}` } : {}), ...style }
+  }, children);
+}
+
+function StatTile({ value, label, color }) {
+  return e('div', { className: 'stat-tile' },
+    e('div', { className: 'val', style: { color: color || 'var(--text)' } }, value),
+    e('div', { className: 'lbl' }, label)
+  );
+}
+
+function BarRow({ label, score, color, maxScore = 5 }) {
+  return e('div', { className: 'bar-row' },
+    e('span', { className: 'bar-label' }, label),
+    e('div', { className: 'bar-track' },
+      e('div', { className: 'bar-fill', style: { width: `${(score / maxScore) * 100}%`, background: color } })
+    ),
+    e('span', { className: 'bar-score', style: { color } }, score)
+  );
+}
+
+function PlayerRow({ player, showYtd }) {
+  const ptColor = player.pts >= 20 ? 'var(--accent)' : player.pts >= 10 ? 'var(--text2)' : 'var(--accent2)';
+  return e('div', { className: 'player-row' },
+    e(PosBadge, { pos: player.position }),
+    e('span', { className: 'player-name' }, player.name),
+    e('span', { className: 'player-team' }, player.team),
+    player.injury_status && e(Tag, { color: 'red' }, player.injury_status.toUpperCase()),
+    e('span', { className: 'player-pts', style: { color: ptColor } },
+      showYtd && player.ytd_avg ? `${player.pts}/${player.ytd_avg}` : player.pts
+    )
+  );
+}
+
+function Loading({ message }) {
+  return e('div', { className: 'loading' },
+    e('div', { className: 'spinner' }),
+    e('div', { className: 'loading-msg' }, message || 'Loading…')
+  );
+}
+
+function Alert({ type, title, children }) {
+  return e('div', { className: `alert alert-${type || 'info'}` },
+    title && e('h3', null, title),
+    children
+  );
+}
+
+// ── RESULTS VIEWS ─────────────────────────────────────────────────────────────
+
+function AlertsView({ data, type }) {
+  if (!data || !data.results?.length) return e(Alert, { type: 'success', title: '✅ All Clear' }, e('p', null, 'No issues found across your leagues.'));
+  return e('div', null,
+    data.results.map(r => e(Card, { key: r.league, borderColor: 'var(--accent2)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league)),
+        e(Tag, { color: 'red' }, `${(r.injured || r.questionable || r.on_bye || []).length} flagged`)
+      ),
+      (r.injured || r.questionable || r.on_bye || []).map(p =>
+        e('div', { key: p.id, className: 'player-row' },
+          e(PosBadge, { pos: p.position }),
+          e('span', { className: 'player-name' }, p.name),
+          e('span', { className: 'player-team' }, p.team),
+          e(Tag, { color: 'red' }, (p.status || '').toUpperCase())
+        )
+      )
+    ))
+  );
+}
+
+function WeekRecordView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No matchup data found.'));
+  const wins = data.results.filter(r => r.proj_win).length;
+  const losses = data.results.filter(r => !r.proj_win).length;
+  const actualWins = data.week_completed ? data.results.filter(r => r.actual_won && !r.actual_tied).length : null;
+  const actualLosses = data.week_completed ? data.results.filter(r => !r.actual_won && !r.actual_tied).length : null;
+
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: `${wins}-${losses}`, label: 'Projected', color: 'var(--accent4)' }),
+      data.week_completed
+        ? e(StatTile, { value: `${actualWins}-${actualLosses}`, label: 'Actual', color: 'var(--accent)' })
+        : e(StatTile, { value: '?-?', label: 'Actual', color: 'var(--text3)' }),
+      e(StatTile, { value: data.results.filter(r => r.surprise).length, label: 'Surprises', color: 'var(--accent3)' })
+    ),
+    data.results.filter(r => r.surprise).length > 0 && e(Card, { borderColor: 'var(--accent3)' },
+      e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--accent3)', marginBottom: 10 } }, '⚡ SURPRISES'),
+      data.results.filter(r => r.surprise).map(r =>
+        e('div', { key: r.league, style: { display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid var(--border)' } },
+          e('div', null, e('div', { style: { fontWeight: 700, fontSize: 13 } }, r.league), e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, `vs ${r.opp_name}`)),
+          e('div', { style: { textAlign: 'right' } },
+            e('div', { style: { fontWeight: 700, fontSize: 11, color: r.surprise === 'upset_win' ? 'var(--accent)' : 'var(--accent2)' } }, r.surprise === 'upset_win' ? '🎉 Upset Win' : '😤 Upset Loss'),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${r.my_actual?.toFixed(2)} – ${r.opp_actual?.toFixed(2)}`)
+          )
+        )
+      )
+    ),
+    e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 10 } }, 'BY LEAGUE'),
+    data.results.map(r => {
+      const projColor = r.proj_win ? 'var(--accent)' : 'var(--accent2)';
+      return e('div', { key: r.league, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${projColor}`, borderRadius: 8, marginBottom: 6, flexWrap: 'wrap' } },
+        e('div', { style: { flex: 1 } }, e('div', { style: { fontWeight: 700, fontSize: 13 } }, r.league), e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, `vs ${r.opp_name}`)),
+        e('div', { style: { textAlign: 'center', minWidth: 90 } }, e('div', { style: { fontSize: 12, fontWeight: 600 } }, `${r.my_proj} – ${r.opp_proj}`), e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'projected')),
+        data.week_completed && e('div', { style: { textAlign: 'center', minWidth: 90 } }, e('div', { style: { fontSize: 12, fontWeight: 600 } }, `${r.my_actual?.toFixed(2)} – ${r.opp_actual?.toFixed(2)}`), e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'actual')),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontWeight: 700, color: projColor, fontSize: 11 } }, r.proj_win ? '📈 WIN' : '📉 LOSS'),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${r.win_prob}% win prob`),
+          data.week_completed && r.surprise && e(Tag, { color: r.surprise === 'upset_win' ? 'green' : 'red' }, r.surprise === 'upset_win' ? '🎉 Upset' : '😤 Upset')
+        )
+      );
+    })
+  );
+}
+
+function ThereIsAChanceView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No live matchup data found.'));
+  const STATUS_COLOR = { WON: 'var(--accent)', WINNING: 'var(--accent)', 'HOLD ON': 'var(--accent3)', "THERE'S A CHANCE": 'var(--accent3)', 'LONG SHOT': '#ff8c42', ELIMINATED: 'var(--accent2)' };
+  const winning = data.results.filter(r => ['WON','WINNING'].includes(r.status)).length;
+  const alive = data.results.filter(r => ["THERE'S A CHANCE",'HOLD ON','LONG SHOT'].includes(r.status)).length;
+  const elim = data.results.filter(r => r.status === 'ELIMINATED').length;
+
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: winning, label: 'Winning/Won', color: 'var(--accent)' }),
+      e(StatTile, { value: alive, label: 'Still Alive', color: 'var(--accent3)' }),
+      e(StatTile, { value: elim, label: 'Eliminated', color: 'var(--accent2)' }),
+      data.skipped?.length > 0 && e(StatTile, { value: data.skipped.length, label: 'Ignored >15%', color: 'var(--text3)' })
+    ),
+    data.results.map(r => {
+      const sc = STATUS_COLOR[r.status] || 'var(--text2)';
+      return e(Card, { key: r.league, borderColor: sc },
+        e('div', { className: 'card-header' },
+          e('div', null, e('div', { className: 'card-title' }, r.league), e('div', { className: 'card-subtitle' }, `vs ${r.opp_name}`)),
+          e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.2rem', color: sc, textAlign: 'right' } }, r.status)
+        ),
+        e('div', { className: 'grid-2', style: { marginBottom: 10 } },
+          e('div', { style: { padding: '8px 12px', background: 'var(--surface2)', borderRadius: 8, textAlign: 'center' } },
+            e('div', { style: { fontSize: 10, color: 'var(--text3)', marginBottom: 2 } }, `YOU · ${r.my_remaining?.length} left`),
+            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.8rem', color: 'var(--accent)' } }, r.my_live?.toFixed(2)),
+            r.my_remaining?.length > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `+${r.my_remaining_proj} → ${r.my_max} max`)
+          ),
+          e('div', { style: { padding: '8px 12px', background: 'var(--surface2)', borderRadius: 8, textAlign: 'center' } },
+            e('div', { style: { fontSize: 10, color: 'var(--text3)', marginBottom: 2 } }, `THEM · ${r.opp_remaining?.length} left`),
+            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.8rem', color: 'var(--accent2)' } }, r.opp_live?.toFixed(2)),
+            r.opp_remaining?.length > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `+${r.opp_remaining_proj} → ${r.opp_max} max`)
+          )
+        ),
+        r.my_remaining?.length > 0 && e('div', { style: { marginBottom: 8 } },
+          e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 5 } }, 'Your Remaining'),
+          e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4 } },
+            r.my_remaining.map(p => e('div', { key: p.id, style: { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 8px', background: 'var(--bg)', border: '1px solid rgba(0,229,160,0.3)', borderRadius: 6 } },
+              e(PosBadge, { pos: p.position }), e('span', { style: { fontSize: 11 } }, p.name), e('span', { style: { fontSize: 11, fontWeight: 700, color: 'var(--accent)' } }, p.proj_pts)
+            ))
+          )
+        ),
+        r.opp_remaining?.length > 0 && e('div', null,
+          e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent2)', marginBottom: 5 } }, 'Their Remaining'),
+          e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4 } },
+            r.opp_remaining.map(p => e('div', { key: p.id, style: { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 8px', background: 'var(--bg)', border: '1px solid rgba(255,92,92,0.2)', borderRadius: 6 } },
+              e(PosBadge, { pos: p.position }), e('span', { style: { fontSize: 11 } }, p.name), e('span', { style: { fontSize: 11, fontWeight: 700, color: 'var(--accent2)' } }, p.proj_pts)
+            ))
+          )
+        )
+      );
+    })
+  );
+}
+
+function OptimalLineupView({ data }) {
+  if (!data) return null;
+  const total = (data.results?.length || 0) + (data.optimal_leagues?.length || 0);
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: total, label: 'Leagues', color: 'var(--text2)' }),
+      e(StatTile, { value: data.optimal_leagues?.length || 0, label: 'Already Optimal', color: 'var(--accent)' }),
+      e(StatTile, { value: data.results?.length || 0, label: 'Need Changes', color: 'var(--accent3)' })
+    ),
+    data.results?.map(r => e(Card, { key: r.league },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', color: 'var(--accent)' } }, r.optimal_pts?.toFixed(1)),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'optimal pts'),
+          e('div', { style: { fontSize: 11, color: 'var(--accent3)' } }, `+${r.gain?.toFixed(1)} vs current`)
+        )
+      ),
+      r.should_start?.length > 0 && e('div', { style: { marginBottom: 12 } },
+        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent3)', marginBottom: 6 } }, '🔄 Recommended Swaps'),
+        r.lineup?.filter(os => os.player && !os.player.is_starter).map((os, i) => {
+          const bench_p = os.player;
+          const bumped = r.should_bench?.[i];
+          if (!bumped) return null;
+          return e('div', { key: i, className: 'swap-card' },
+            e('div', null,
+              e('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 } }, e(PosBadge, { pos: bench_p.position }), e('span', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent)' } }, `START ${bench_p.name}`)),
+              e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${bench_p.team} · ${bench_p.pts} proj`)
+            ),
+            e('div', { style: { textAlign: 'center', fontSize: 18, color: 'var(--text3)' } }, '⇄'),
+            e('div', null,
+              e('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 } }, e(PosBadge, { pos: bumped.position }), e('span', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent2)' } }, `BENCH ${bumped.name}`)),
+              e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${bumped.team} · ${bumped.pts} proj`)
+            )
+          );
+        })
+      ),
+      e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6 } }, 'Optimal Lineup'),
+      r.lineup?.map((os, i) => {
+        const p = os.player;
+        if (!p) return e('div', { key: i, className: 'player-row', style: { opacity: 0.5 } }, e('span', { style: { fontSize: 10, color: 'var(--text3)', minWidth: 52 } }, os.slot), e('span', { style: { fontSize: 11, color: 'var(--accent2)' } }, 'Empty'));
+        const ptColor = p.pts >= 20 ? 'var(--accent)' : p.pts >= 10 ? 'var(--text2)' : 'var(--accent2)';
+        return e('div', { key: i, className: 'player-row', style: { border: `1px solid ${!p.is_starter ? 'rgba(255,179,71,0.4)' : 'var(--border)'}` } },
+          e('span', { style: { fontSize: 9, color: 'var(--text3)', minWidth: 52, textAlign: 'center' } }, os.slot),
+          e(PosBadge, { pos: p.position }),
+          e('span', { className: 'player-name' }, p.name),
+          e('span', { className: 'player-team' }, p.team),
+          !p.is_starter && e('span', { style: { fontSize: 9, color: 'var(--accent3)', fontWeight: 700 } }, '▲'),
+          e('span', { className: 'player-pts', style: { color: ptColor } }, p.pts)
+        );
+      })
+    )),
+    data.optimal_leagues?.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 8 } }, `✅ Already Optimal (${data.optimal_leagues.length})`),
+      data.optimal_leagues.map(l => e('div', { key: l.league, style: { display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid var(--border)', fontSize: 12 } },
+        e('span', null, l.league, l.team ? e('span', { style: { color: 'var(--text3)', fontSize: 10 } }, ` · ${l.team}`) : null),
+        e('span', { style: { fontWeight: 700, color: 'var(--accent)' } }, `${l.pts} pts`)
+      ))
+    )
+  );
+}
+
+function OverviewView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
+  const totalW = data.results.reduce((s, r) => s + (parseInt(r.record?.split('-')[0]) || 0), 0);
+  const totalL = data.results.reduce((s, r) => s + (parseInt(r.record?.split('-')[1]) || 0), 0);
+  const avgComp = (data.results.reduce((s, r) => s + r.composite, 0) / data.results.length).toFixed(2);
+  const tierCounts = {};
+  const stratCounts = {};
+  data.results.forEach(r => { tierCounts[r.tier] = (tierCounts[r.tier] || 0) + 1; stratCounts[r.strategy] = (stratCounts[r.strategy] || 0) + 1; });
+
+  const TIER_COLORS = { Juggernaut: 'var(--accent)', Contender: 'var(--accent4)', Fringe: 'var(--accent3)', Rebuild: 'var(--accent2)' };
+  const STRAT_COLORS = { 'Win Now': 'var(--accent)', 'Sell High': 'var(--accent4)', Patience: 'var(--accent3)', 'Trust the Process': '#ff8c42', 'Full Rebuild': 'var(--accent2)' };
+
+  return e('div', null,
+    e('div', { className: 'grid-2', style: { marginBottom: 16 } },
+      e('div', { style: { padding: '14px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, textAlign: 'center' } },
+        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6 } }, 'Overall Record'),
+        e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '2rem' } },
+          e('span', { style: { color: 'var(--accent)' } }, totalW), e('span', { style: { color: 'var(--text3)' } }, '-'), e('span', { style: { color: 'var(--accent2)' } }, totalL)
+        )
+      ),
+      e('div', { style: { padding: '14px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, textAlign: 'center' } },
+        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6 } }, 'Avg Score'),
+        e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '2rem', color: 'var(--accent4)' } }, avgComp),
+        e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, 'out of 5.0')
+      )
+    ),
+    e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 } },
+      Object.entries(tierCounts).map(([t, c]) => e('div', { key: t, style: { padding: '5px 12px', borderRadius: 20, border: `1px solid ${TIER_COLORS[t]}`, fontSize: 12, fontWeight: 700, color: TIER_COLORS[t], background: 'rgba(255,255,255,0.04)' } }, `${t}: ${c}`))
+    ),
+    e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 20 } },
+      Object.entries(stratCounts).map(([s, c]) => e('div', { key: s, style: { padding: '5px 12px', borderRadius: 20, border: `1px solid ${STRAT_COLORS[s]}`, fontSize: 12, fontWeight: 700, color: STRAT_COLORS[s], background: 'rgba(255,255,255,0.04)' } }, `${s}: ${c}`))
+    ),
+    e(Card, { style: { marginBottom: 20 } },
+      e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 12 } }, 'ALL LEAGUES OVERVIEW'),
+      data.results.map(r => {
+        const bars = [
+          { label: 'Roster', score: r.scores?.Roster, color: 'var(--accent4)' },
+          { label: 'Draft', score: r.scores?.Draft, color: 'var(--purple)' },
+          { label: 'Age', score: r.scores?.Age, color: 'var(--accent3)' },
+          { label: 'Depth', score: r.scores?.Depth, color: 'var(--accent)' },
+          { label: 'Record', score: r.scores?.Record, color: '#00e5a0' },
+        ];
+        return e('div', { key: r.league, style: { marginBottom: 14 } },
+          e('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 } },
+            e('span', { style: { fontWeight: 700 } }, r.league),
+            e('span', { style: { color: STRAT_COLORS[r.strategy], fontWeight: 700 } }, `${r.strat_icon} ${r.strategy} · ${r.tier_icon} ${r.tier}`)
+          ),
+          bars.map(b => e(BarRow, { key: b.label, ...b }))
+        );
+      })
+    ),
+    data.results.map(r => e(Card, { key: r.league, borderColor: r.tier_color },
+      e('div', { className: 'card-header' },
+        e('div', null,
+          e('div', { className: 'card-title' }, r.league),
+          e('div', { className: 'card-subtitle' }, `${r.team || ''} · ${r.record} · #${r.rank}/${r.total_teams}`)
+        ),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.3rem', color: r.tier_color } }, `${r.tier_icon} ${r.tier}`),
+          e('div', { style: { fontWeight: 700, color: r.strat_color, fontSize: 13 } }, `${r.strat_icon} ${r.strategy}`),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${r.composite} / 5.0`)
+        )
+      ),
+      e('div', { style: { fontSize: 12, color: 'var(--text2)', marginBottom: 12, fontStyle: 'italic' } }),
+      e('div', { className: 'grid-2', style: { marginBottom: 12 } },
+        e('div', { style: { padding: '8px 10px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8 } },
+          e('div', { style: { fontSize: 9, color: 'var(--text3)', marginBottom: 2 } }, 'Starter Pts'),
+          e('div', { style: { fontSize: 13, fontWeight: 700 } }, r.starter_pts, e('span', { style: { fontSize: 10, color: r.pts_vs_avg >= 1 ? 'var(--accent)' : 'var(--accent2)', marginLeft: 4 } }, `${r.pts_vs_avg >= 1 ? '+' : ''}${((r.pts_vs_avg - 1) * 100).toFixed(0)}% vs avg`))
+        ),
+        e('div', { style: { padding: '8px 10px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8 } },
+          e('div', { style: { fontSize: 9, color: 'var(--text3)', marginBottom: 2 } }, 'Avg Age'),
+          e('div', { style: { fontSize: 13, fontWeight: 700 } }, r.avg_age)
+        )
+      ),
+      e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6 } }, 'Action Items'),
+      r.strat_actions?.map((a, i) => e('div', { key: i, style: { display: 'flex', gap: 8, padding: '6px 10px', background: 'var(--bg)', border: '1px solid var(--border)', borderLeft: `2px solid ${r.strat_color}`, borderRadius: 6, marginBottom: 4, fontSize: 12, color: 'var(--text2)' } },
+        e('span', { style: { fontFamily: 'Bebas Neue', color: r.strat_color, flexShrink: 0 } }, i + 1), a
+      ))
+    ))
+  );
+}
+
+function PositionNeedsView({ data }) {
+  if (!data?.needs_by_pos || !Object.keys(data.needs_by_pos).length) return e(Alert, { type: 'success', title: '✅ All Positions Covered' }, e('p', null, 'Every position has at least starter depth.'));
+  const GRADE_COLOR = { Empty: '#ff3333', Underfilled: 'var(--accent2)', 'No Depth': 'var(--accent3)', Thin: 'var(--accent4)', 'Flex Short': 'var(--accent2)' };
+  return e('div', null,
+    Object.entries(data.needs_by_pos).map(([pos, needs]) =>
+      e(Card, { key: pos, borderColor: POS_COLORS[pos] },
+        e('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 } },
+          e(PosBadge, { pos }),
+          e('span', { style: { fontSize: 14, fontWeight: 700, color: POS_COLORS[pos] } }, `${pos} — ${needs.length} league${needs.length > 1 ? 's' : ''} need attention`)
+        ),
+        needs.map(n => e('div', { key: n.league, style: { padding: '9px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderLeft: `3px solid ${GRADE_COLOR[n.grade] || 'var(--text3)'}`, borderRadius: 8, marginBottom: 6 } },
+          e('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: 5 } },
+            e('div', null, e('div', { style: { fontWeight: 700, fontSize: 13 } }, n.league), n.team && e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, n.team)),
+            e('div', { style: { textAlign: 'right' } },
+              e('div', { style: { fontSize: 11, fontWeight: 700, color: GRADE_COLOR[n.grade] } }, n.grade),
+              e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${n.owned} owned · ${n.needed} slot${n.needed !== 1 ? 's' : ''}`)
+            )
+          ),
+          n.format_notes?.length > 0 && e('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 5 } },
+            n.format_notes.map((note, i) => e(Tag, { key: i, color: 'blue' }, note))
+          ),
+          n.players?.length > 0
+            ? e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4 } },
+                n.players.map(p => e('span', { key: p.id, style: { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 11 } }, p.name, e('span', { style: { color: 'var(--text3)' } }, p.team)))
+              )
+            : e('div', { style: { fontSize: 11, color: 'var(--accent2)' } }, `No ${pos} players on roster`)
+        ))
+      )
+    )
+  );
+}
+
+function GenericView({ data, title }) {
+  return e('pre', { style: { fontSize: 11, color: 'var(--text2)', overflow: 'auto', whiteSpace: 'pre-wrap' } }, JSON.stringify(data, null, 2));
+}
+
+// ── FEATURE CONFIG ────────────────────────────────────────────────────────────
+const SECTIONS = [
+  {
+    label: 'Lineup & Schedule',
+    features: [
+      { id: 'week-analysis', label: '📊 Week Analysis', endpoint: '/analysis/week', needsWeek: true },
+      { id: 'week-record', label: '🎯 Week Record', endpoint: '/analysis/week-record', needsWeek: true },
+      { id: 'theres-a-chance', label: '🎲 There\'s A Chance', endpoint: '/analysis/theres-a-chance' },
+    ]
+  },
+  {
+    label: 'Alerts',
+    features: [
+      { id: 'injured', label: '🚨 OUT / IR Starters', endpoint: '/alerts/injured-starters' },
+      { id: 'questionable', label: '⚠️ Questionable', endpoint: '/alerts/questionable-starters' },
+      { id: 'bye', label: '📅 Starters on Bye', endpoint: '/alerts/starters-on-bye' },
+      { id: 'open', label: '⚡ Open Spots', endpoint: '/alerts/open-starter-spots' },
+    ]
+  },
+  {
+    label: 'Analysis & Tools',
+    features: [
+      { id: 'optimal', label: '⚡ Optimal Lineup', endpoint: '/analysis/optimal-lineup' },
+      { id: 'upgrade', label: '🔼 Upgrade Recs', endpoint: '/analysis/upgrade-recommendations' },
+      { id: 'position-needs', label: '📍 My Position Needs', endpoint: '/analysis/position-needs' },
+    ]
+  },
+  {
+    label: 'Dynasty Analysis',
+    features: [
+      { id: 'overview', label: '📊 Overview', endpoint: '/analysis/overview' },
+      { id: 'contender', label: '🏆 Contender Status', endpoint: '/analysis/overview' },
+    ]
+  },
+  {
+    label: 'Predictions',
+    features: [
+      { id: 'season-forecast', label: '📈 Season Forecast', endpoint: '/analysis/season-forecast' },
+      { id: 'week-record-pred', label: '🎯 Week Record', endpoint: '/analysis/week-record', needsWeek: true },
+    ]
+  },
+  {
+    label: 'Draft Data',
+    features: [
+      { id: 'draft-picks', label: '📋 All Draft Picks', endpoint: '/analysis/draft-picks' },
+      { id: 'draft-dates', label: '📅 Draft Dates', endpoint: '/analysis/draft-dates' },
+      { id: 'live-draft', label: '🔴 Live Draft', endpoint: '/analysis/live-draft' },
+    ]
+  },
+];
+
+// ── APP ───────────────────────────────────────────────────────────────────────
+function App() {
+  const [username, setUsername] = useState('MattSB');
+  const [leagueName, setLeagueName] = useState('');
+  const [week, setWeek] = useState('');
+  const [active, setActive] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState('');
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+
+  const run = useCallback(async (feature) => {
+    if (!username) { setError('Please enter a username'); return; }
+    if (feature.needsWeek && !week) { setError('Please enter a week number'); return; }
+    setActive(feature.id);
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    setLoadingMsg(`Running ${feature.label}…`);
+    try {
+      const body = { username };
+      if (week) body.week = parseInt(week);
+      if (leagueName) body.league_name = leagueName;
+      const data = await API.post(feature.endpoint, body);
+      setResult({ feature, data });
+    } catch(err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [username, week, leagueName]);
+
+  const renderResult = () => {
+    if (!result) return e('div', { className: 'empty' }, 'Select a feature from the sidebar to get started.');
+    const { feature, data } = result;
+    switch(feature.id) {
+      case 'injured': case 'questionable': case 'bye': case 'open':
+        return e(AlertsView, { data, type: feature.id });
+      case 'week-record': case 'week-record-pred':
+        return e(WeekRecordView, { data });
+      case 'theres-a-chance':
+        return e(ThereIsAChanceView, { data });
+      case 'optimal':
+        return e(OptimalLineupView, { data });
+      case 'overview': case 'contender':
+        return e(OverviewView, { data });
+      case 'position-needs':
+        return e(PositionNeedsView, { data });
+      default:
+        return e(GenericView, { data, title: feature.label });
+    }
+  };
+
+  const allFeatures = SECTIONS.flatMap(s => s.features);
+
+  return e('div', { id: 'root' },
+    // Header
+    e('div', { className: 'app-header' },
+      e('div', { style: { display: 'flex', alignItems: 'baseline' } },
+        e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
+        e('span', { className: 'app-version' }, 'v10.0')
+      ),
+      e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
+    ),
+
+    // Config
+    e('div', { className: 'config-panel' },
+      e('div', { className: 'config-field' },
+        e('label', null, 'Username'),
+        e('input', { value: username, onChange: ev => setUsername(ev.target.value), placeholder: 'sleeper username' })
+      ),
+      e('div', { className: 'config-field' },
+        e('label', null, 'Week (opt)'),
+        e('input', { className: 'short', value: week, onChange: ev => setWeek(ev.target.value), placeholder: '1–18', type: 'number', min: 1, max: 18 })
+      ),
+      e('div', { className: 'config-field' },
+        e('label', null, 'League Name (opt)'),
+        e('input', { value: leagueName, onChange: ev => setLeagueName(ev.target.value), placeholder: 'exact league name' })
+      )
+    ),
+
+    // Mobile nav
+    e('div', { className: 'mobile-nav' },
+      allFeatures.map(f => e('button', { key: f.id, className: `mobile-btn${active === f.id ? ' active' : ''}`, onClick: () => run(f) }, f.label))
+    ),
+
+    // Body
+    e('div', { className: 'app-body' },
+      // Sidebar
+      e('div', { className: 'sidebar' },
+        SECTIONS.map(section => e('div', { key: section.label },
+          e('div', { className: 'section-label' }, section.label),
+          section.features.map(f => e('button', { key: f.id, className: `btn ${active === f.id ? 'btn-green' : 'btn-blue'}`, onClick: () => run(f) }, f.label))
+        ))
+      ),
+
+      // Main
+      e('div', { className: 'main-content' },
+        loading ? e(Loading, { message: loadingMsg })
+        : error ? e(Alert, { type: 'error', title: 'Error' }, e('p', null, error))
+        : e('div', null,
+            result && e(Alert, { type: 'success', title: result.feature.label },
+              e('p', null, `Loaded for ${username}`)
+            ),
+            renderResult()
+          )
+      )
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(e(App));
+</script>
+</body>
+</html>

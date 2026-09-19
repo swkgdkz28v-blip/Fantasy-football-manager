@@ -1230,15 +1230,23 @@ async def get_starter_upgrades(req: UserRequest):
         fa_candidates.sort(key=lambda x: -x["pts"])
         top_fas = fa_candidates[:100]  # limit for performance
 
-        # Find upgrades per starter slot
+        # Find upgrades per starter slot — track used starters to avoid repeats
         upgrades = []
-        for slot in starter_slots:
+        flagged_starters = set()  # starter ids already flagged for replacement
+
+        # Sort slots: dedicated positions first, flex last
+        slots_sorted = sorted(starter_slots, key=lambda s: len(SLOT_ELIGIBILITY.get(s, [s])))
+
+        for slot in slots_sorted:
             eligible = SLOT_ELIGIBILITY.get(slot, [slot])
 
-            # Current starter in this slot
-            slot_starter = next((p for p in my_starters if p["position"] in eligible), None)
-            if not slot_starter:
+            # Find the weakest unflagged starter eligible for this slot
+            slot_starters = [p for p in my_starters
+                            if p["position"] in eligible
+                            and p["id"] not in flagged_starters]
+            if not slot_starters:
                 continue
+            slot_starter = min(slot_starters, key=lambda p: p["pts"])
 
             starter_pts = slot_starter["pts"]
             MIN_GAIN = 1.5
@@ -1248,19 +1256,22 @@ async def get_starter_upgrades(req: UserRequest):
                         if p["position"] in eligible
                         and p["pts"] > starter_pts + MIN_GAIN]
             bench_ups.sort(key=lambda x: -x["pts"])
+            bench_ups = bench_ups[:2]
 
             # Check FA upgrades
             fa_ups = [p for p in top_fas
                      if p["position"] in eligible
                      and p["pts"] > starter_pts + MIN_GAIN]
             fa_ups.sort(key=lambda x: -x["pts"])
+            fa_ups = fa_ups[:2]
 
             if bench_ups or fa_ups:
+                flagged_starters.add(slot_starter["id"])
                 upgrades.append({
                     "slot": slot,
                     "current_starter": slot_starter,
-                    "bench_upgrades": bench_ups[:2],
-                    "fa_upgrades": fa_ups[:2],
+                    "bench_upgrades": bench_ups,
+                    "fa_upgrades": fa_ups,
                 })
 
         results.append({

@@ -1283,7 +1283,7 @@ async def get_starter_upgrades(req: UserRequest):
             "league": league["name"],
             "team": my_team_name,
             "upgrades": upgrades,
-            "starter_count": len(my_starters),
+            "starter_count": len(my_starters_list),
             "optimal": len(upgrades) == 0,
         })
 

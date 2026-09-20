@@ -522,6 +522,41 @@ function ThereIsAChanceView({ data }) {
   );
 }
 
+
+// Renders explicit swap pairs from the backend. `ptsKey` picks which number to show.
+function SwapList({ swaps, ptsKey = 'pts', subKey }) {
+  if (!swaps?.length) return null;
+  return e('div', { style: { marginBottom: 12 } },
+    e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent3)', marginBottom: 6 } }, '🔄 Moves To Make'),
+    swaps.map((sw, i) => {
+      const inP = sw.in, outP = sw.out;
+      const gain = ((inP?.[ptsKey] || 0) - (outP?.[ptsKey] || 0)).toFixed(1);
+      return e('div', { key: i, className: 'swap-card' },
+        e('div', null,
+          e('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 } },
+            inP && e(PosBadge, { pos: inP.position }),
+            e('span', { style: { fontSize: 11, fontWeight: 700, color: 'var(--accent)' } }, `START @ ${sw.slot}`)
+          ),
+          e('div', { style: { fontSize: 12, fontWeight: 600 } }, inP?.name || '—'),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, inP ? `${inP.team} · ${inP[ptsKey]}${subKey && inP[subKey] != null ? ` · ${inP[subKey]} avg` : ''}` : '')
+        ),
+        e('div', { style: { textAlign: 'center' } },
+          e('div', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent3)' } }, `+${gain}`),
+          e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, '⇄')
+        ),
+        e('div', null,
+          e('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 } },
+            outP && e(PosBadge, { pos: outP.position }),
+            e('span', { style: { fontSize: 11, fontWeight: 700, color: 'var(--accent2)' } }, outP ? 'BENCH' : 'EMPTY SLOT')
+          ),
+          e('div', { style: { fontSize: 12, fontWeight: 600 } }, outP?.name || '—'),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, outP ? `${outP.team} · ${outP[ptsKey]}${subKey && outP[subKey] != null ? ` · ${outP[subKey]} avg` : ''}` : '')
+        )
+      );
+    })
+  );
+}
+
 function OptimalLineupView({ data }) {
   if (!data) return null;
   const total = (data.results?.length || 0) + (data.optimal_leagues?.length || 0);
@@ -537,35 +572,18 @@ function OptimalLineupView({ data }) {
         e('div', { style: { textAlign: 'right' } },
           e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', color: 'var(--accent)' } }, r.optimal_pts?.toFixed(1)),
           e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'optimal pts'),
-          e('div', { style: { fontSize: 11, color: 'var(--accent3)' } }, `+${r.gain?.toFixed(1)} vs current`)
+          e('div', { style: { fontSize: 11, color: 'var(--accent3)' } }, `+${r.gain?.toFixed(1)} vs current`),
+          r.locked_count > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `🔒 ${r.locked_count} locked (played)`)
         )
       ),
-      r.should_start?.length > 0 && e('div', { style: { marginBottom: 12 } },
-        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent3)', marginBottom: 6 } }, '🔄 Recommended Swaps'),
-        r.lineup?.filter(os => os.player && !os.player.is_starter).map((os, i) => {
-          const bench_p = os.player;
-          const bumped = r.should_bench?.[i];
-          if (!bumped) return null;
-          return e('div', { key: i, className: 'swap-card' },
-            e('div', null,
-              e('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 } }, e(PosBadge, { pos: bench_p.position }), e('span', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent)' } }, `START ${bench_p.name}`)),
-              e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${bench_p.team} · ${bench_p.pts} proj`)
-            ),
-            e('div', { style: { textAlign: 'center', fontSize: 18, color: 'var(--text3)' } }, '⇄'),
-            e('div', null,
-              e('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 } }, e(PosBadge, { pos: bumped.position }), e('span', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent2)' } }, `BENCH ${bumped.name}`)),
-              e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${bumped.team} · ${bumped.pts} proj`)
-            )
-          );
-        })
-      ),
+      e(SwapList, { swaps: r.swaps, ptsKey: 'pts' }),
       e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6 } }, 'Optimal Lineup'),
       r.lineup?.map((os, i) => {
         const p = os.player;
         if (!p) return e('div', { key: i, className: 'player-row', style: { opacity: 0.5 } }, e('span', { style: { fontSize: 10, color: 'var(--text3)', minWidth: 52 } }, os.slot), e('span', { style: { fontSize: 11, color: 'var(--accent2)' } }, 'Empty'));
         const ptColor = p.pts >= 20 ? 'var(--accent)' : p.pts >= 10 ? 'var(--text2)' : 'var(--accent2)';
-        return e('div', { key: i, className: 'player-row', style: { border: `1px solid ${!p.is_starter ? 'rgba(255,179,71,0.4)' : 'var(--border)'}` } },
-          e('span', { style: { fontSize: 9, color: 'var(--text3)', minWidth: 52, textAlign: 'center' } }, os.slot),
+        return e('div', { key: i, className: 'player-row', style: { opacity: os.locked ? 0.6 : 1, border: `1px solid ${!p.is_starter ? 'rgba(255,179,71,0.4)' : 'var(--border)'}` } },
+          e('span', { style: { fontSize: 9, color: 'var(--text3)', minWidth: 52, textAlign: 'center' } }, os.locked ? `🔒 ${os.slot}` : os.slot),
           e(PosBadge, { pos: p.position }),
           e('span', { className: 'player-name' }, p.name),
           e('span', { className: 'player-team' }, p.team),
@@ -714,7 +732,10 @@ function StarterUpgradesView({ data }) {
     needsWork.map(r => e(Card, { key: r.league, borderColor: 'var(--accent3)' },
       e('div', { className: 'card-header' },
         e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
-        e(Tag, { color: 'orange' }, `${r.upgrades.length} slot${r.upgrades.length > 1 ? 's' : ''} to upgrade`)
+        e('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' } },
+          e(Tag, { color: 'orange' }, `${r.upgrades.length} slot${r.upgrades.length > 1 ? 's' : ''} to upgrade`),
+          r.locked_count > 0 && e(Tag, { color: 'gray' }, `🔒 ${r.locked_count} played`)
+        )
       ),
       r.upgrades.map((u, i) => e('div', { key: i, style: { marginBottom: 14 } },
         e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6 } },
@@ -852,8 +873,8 @@ function WeekAnalysisView({ data }) {
 // ── UPGRADE RECS VIEW ─────────────────────────────────────────────────────────
 function UpgradeRecsView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
-  const hasUpgrades = data.results.filter(r => r.should_start?.length > 0);
-  const optimal = data.results.filter(r => !r.should_start?.length);
+  const hasUpgrades = data.results.filter(r => r.swaps?.length > 0);
+  const optimal = data.results.filter(r => !r.swaps?.length);
 
   return e('div', null,
     e('div', { className: 'stat-row' },
@@ -868,29 +889,7 @@ function UpgradeRecsView({ data }) {
           e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'pts gain')
         )
       ),
-      e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent3)', marginBottom: 6 } }, '🔄 Recommended Swaps'),
-      r.should_start?.map((p, i) => {
-        const benched = r.should_bench?.[i];
-        return e('div', { key: p.id, className: 'swap-card' },
-          e('div', null,
-            e('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 } },
-              e(PosBadge, { pos: p.position }),
-              e('span', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent)' } }, `START`)
-            ),
-            e('div', { style: { fontSize: 12, fontWeight: 600 } }, p.name),
-            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${p.team} · ${p.week_pts} proj · ${p.ytd_avg} avg`)
-          ),
-          e('div', { style: { textAlign: 'center', fontSize: 18, color: 'var(--text3)' } }, '⇄'),
-          benched ? e('div', null,
-            e('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 } },
-              e(PosBadge, { pos: benched.position }),
-              e('span', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent2)' } }, `BENCH`)
-            ),
-            e('div', { style: { fontSize: 12, fontWeight: 600 } }, benched.name),
-            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${benched.team} · ${benched.week_pts} proj · ${benched.ytd_avg} avg`)
-          ) : e('div', null)
-        );
-      })
+      e(SwapList, { swaps: r.swaps, ptsKey: 'week_pts', subKey: 'ytd_avg' }),
     )),
     optimal.length > 0 && e(Card, { borderColor: 'var(--accent)' },
       e('div', { style: { fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontWeight: 700 } }, `✅ Already Optimal (${optimal.length})`),

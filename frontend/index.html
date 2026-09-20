@@ -803,61 +803,6 @@ function BenchVsFaView({ data }) {
 }
 
 
-// ── CLAUDE TRADE ADVICE VIEW ──────────────────────────────────────────────────
-function ClaudeTradeAdviceView({ data }) {
-  const [expanded, setExpanded] = useState(null);
-  if (!data?.sections?.length) return e(Alert, { type: 'info' }, e('p', null, 'No analysis returned.'));
-
-  // Extract one-line summary from each section (first non-empty line)
-  const getSummary = (content) => {
-    const lines = content.split('\n').filter(l => l.trim());
-    return lines[0]?.replace(/^[#*•\-\d\.]+\s*/, '').trim() || '';
-  };
-
-  const formatContent = (text) => {
-    return text.split('\n').map((line, i) => {
-      const trimmed = line.trim();
-      if (!trimmed) return e('div', { key: i, style: { height: 8 } });
-      if (trimmed.startsWith('**') && trimmed.endsWith('**')) {
-        return e('div', { key: i, style: { fontWeight: 700, color: 'var(--text)', fontSize: 13, marginTop: 10, marginBottom: 4 } }, trimmed.replace(/\*\*/g, ''));
-      }
-      if (trimmed.match(/^[•\-\*]/) || trimmed.match(/^\d+\./)) {
-        return e('div', { key: i, style: { display: 'flex', gap: 8, padding: '5px 10px', background: 'var(--bg)', border: '1px solid var(--border)', borderLeft: '2px solid var(--accent4)', borderRadius: 6, marginBottom: 4, fontSize: 12, color: 'var(--text2)', lineHeight: 1.5 } },
-          e('span', { style: { color: 'var(--accent4)', flexShrink: 0 } }, '→'),
-          trimmed.replace(/^[•\-\*\d\.]+\s*/, '')
-        );
-      }
-      return e('div', { key: i, style: { fontSize: 12, color: 'var(--text2)', lineHeight: 1.6, marginBottom: 4 } }, trimmed);
-    });
-  };
-
-  return e('div', null,
-    e(Alert, { type: 'success' },
-      e('p', null, `Claude analyzed ${data.leagues_analyzed} leagues for ${data.username}`)
-    ),
-    e('div', { style: { marginBottom: 16 } },
-      e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 10 } }, 'TRADE RECOMMENDATIONS'),
-      data.sections.map(section =>
-        e('div', { key: section.league, style: { marginBottom: 8, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' } },
-          e('button', {
-            style: { width: '100%', padding: '12px 16px', background: 'transparent', border: 'none', textAlign: 'left', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 },
-            onClick: () => setExpanded(expanded === section.league ? null : section.league),
-          },
-            e('div', { style: { flex: 1, minWidth: 0 } },
-              e('div', { style: { fontWeight: 700, fontSize: 13, color: 'var(--text)', marginBottom: 3 } }, section.league),
-              e('div', { style: { fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, getSummary(section.content))
-            ),
-            e('span', { style: { fontSize: 10, color: 'var(--accent4)', flexShrink: 0, marginTop: 2 } }, expanded === section.league ? '▲ Less' : '▼ More')
-          ),
-          expanded === section.league && e('div', { style: { padding: '0 16px 16px', borderTop: '1px solid var(--border)' } },
-            e('div', { style: { paddingTop: 12 } }, ...formatContent(section.content))
-          )
-        )
-      )
-    )
-  );
-}
-
 // ── WEEK ANALYSIS VIEW ────────────────────────────────────────────────────────
 function WeekAnalysisView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No matchup data found.'));
@@ -1102,14 +1047,13 @@ const SECTIONS = [
       { id: 'starter-upgrades', label: '⬆ Starter Upgrades', endpoint: '/analysis/starter-upgrades' },
       { id: 'bench-vs-fa', label: '🔄 Bench vs FA', endpoint: '/analysis/bench-vs-fa' },
       { id: 'position-needs', label: '📍 My Position Needs', endpoint: '/analysis/position-needs' },
-      { id: 'claude-trade', label: '🤖 Claude Trade Advice', endpoint: '/analysis/claude-trade-advice' },
     ]
   },
   {
     label: 'Dynasty Analysis',
     features: [
       { id: 'overview', label: '📊 Overview', endpoint: '/analysis/overview' },
-      { id: 'contender', label: '🏆 Contender Status', endpoint: '/analysis/overview' },
+
     ]
   },
   {
@@ -1215,7 +1159,7 @@ function App() {
         return e(ThereIsAChanceView, { data });
       case 'optimal':
         return e(OptimalLineupView, { data });
-      case 'overview': case 'contender':
+      case 'overview':
         return e(OverviewView, { data });
       case 'position-needs':
         return e(PositionNeedsView, { data });
@@ -1235,8 +1179,6 @@ function App() {
         return e(StarterUpgradesView, { data });
       case 'bench-vs-fa':
         return e(BenchVsFaView, { data });
-      case 'claude-trade':
-        return e(ClaudeTradeAdviceView, { data });
       default:
         return e(GenericView, { data, title: feature.label });
     }

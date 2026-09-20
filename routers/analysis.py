@@ -991,11 +991,20 @@ async def get_season_forecast(req: UserRequest):
         games_played = wins + losses
         weeks_remaining = max(0, regular_season_end - (current_week - 1))
 
+        # Build proj scores for all teams
+        all_proj_scores = [(r["roster_id"], proj_score(r)) for r in rosters]
+        other_scores = [s for rid, s in all_proj_scores if rid != my_roster["roster_id"]]
+
+        # Simulate remaining weeks — rotate through opponents
         proj_wins = wins
         proj_losses = losses
-        for _ in range(weeks_remaining):
-            opp_proj = sum(proj_score(r) for r in rosters if r["owner_id"] != user_id) / max(len(rosters) - 1, 1)
-            if my_proj > opp_proj:
+        import random
+        random.seed(my_roster["roster_id"])  # deterministic per roster
+        opponents = other_scores * ((weeks_remaining // max(len(other_scores), 1)) + 2)
+        random.shuffle(opponents)
+        for i in range(weeks_remaining):
+            opp_score = opponents[i % len(opponents)] if opponents else my_proj
+            if my_proj > opp_score:
                 proj_wins += 1
             else:
                 proj_losses += 1
@@ -1400,195 +1409,3 @@ async def get_bench_vs_fa(req: UserRequest):
     results.sort(key=lambda r: -len(r["drops"]))
     return {"week": week, "results": results}
 
-# ── CLAUDE TRADE ADVICE ───────────────────────────────────────────────────────
-
-@router.post("/analysis/claude-trade-advice")
-async def get_claude_trade_advice(req: UserRequest):
-    import os
-    try:
-        import anthropic as anthropic_sdk
-    except ImportError:
-        raise HTTPException(status_code=500, detail="Anthropic SDK not installed")
-
-    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
-    user_id = user["user_id"]
-    week = req.week or current_week
-
-    proj_array = await get_projections(season, week)
-
-    league_summaries = []
-
-    for league in leagues:
-        ss = league.get("scoring_settings") or {}
-        proj_map = build_proj_map(proj_array, ss)
-        roster_positions = league.get("roster_positions", [])
-        starter_slots = [s for s in roster_positions if s not in ("BN", "IR", "TAXI")]
-        is_dynasty = league.get("settings", {}).get("type", 0) == 2
-        scoring_type = "PPR" if ss.get("rec", 0) >= 1 else "Half PPR" if ss.get("rec", 0) >= 0.5 else "Standard"
-        sf_count = sum(1 for s in starter_slots if s == "SUPER_FLEX")
-        num_qb = sum(1 for s in starter_slots if s == "QB") + sf_count
-
-        rosters, league_users = await asyncio.gather(
-            get_rosters(league["league_id"]),
-            get_league_users(league["league_id"])
-        )
-
-        my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
-        if not my_roster:
-            continue
-
-        user_lookup = {u["user_id"]: u for u in league_users}
-        roster_lookup = {r["roster_id"]: r for r in rosters}
-        my_user = user_lookup.get(user_id)
-        my_team_name = (my_user or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
-
-        wins = my_roster.get("settings", {}).get("wins", 0)
-        losses = my_roster.get("settings", {}).get("losses", 0)
-        playoff_spots = league.get("settings", {}).get("playoff_teams", 6)
-        total_teams = len(rosters)
-
-        sorted_rosters = sorted(rosters, key=lambda r: (-(r.get("settings") or {}).get("wins", 0), -(r.get("settings") or {}).get("fpts", 0)))
-        my_rank = next((i + 1 for i, r in enumerate(sorted_rosters) if r["roster_id"] == my_roster["roster_id"]), total_teams)
-        in_playoffs = my_rank <= playoff_spots
-
-        taxi_ids = set(str(pid) for pid in (my_roster.get("taxi") or []))
-        starter_ids = set(str(pid) for pid in (my_roster.get("starters") or []))
-
-        def fmt_player(pid):
-            p = players_db.get(str(pid))
-            if not p:
-                return None
-            pts = proj_map.get(str(pid), 0)
-            return f"{player_name(p)} ({p.get('position','?')}, {p.get('team','FA')}, {pts:.1f}pts, age {p.get('age','?')})"
-
-        my_starters = [s for pid in starter_ids if (s := fmt_player(pid)) is not None]
-        my_bench = [s for pid in (my_roster.get("players") or [])
-                   if str(pid) not in starter_ids and str(pid) not in taxi_ids
-                   if (s := fmt_player(pid)) is not None]
-
-        # Position counts
-        pos_counts = {}
-        for pid in (my_roster.get("players") or []):
-            if str(pid) in taxi_ids:
-                continue
-            p = players_db.get(str(pid))
-            if p:
-                pos = p.get("position", "")
-                pos_counts[pos] = pos_counts.get(pos, 0) + 1
-
-        # Other teams summary (for trade targets)
-        other_teams = []
-        for r in sorted_rosters[:6]:  # top 6 teams
-            if r["owner_id"] == user_id:
-                continue
-            owner = user_lookup.get(r["owner_id"])
-            team_name = (owner or {}).get("metadata", {}).get("team_name") or (owner or {}).get("display_name", "Unknown")
-            r_wins = (r.get("settings") or {}).get("wins", 0)
-            r_losses = (r.get("settings") or {}).get("losses", 0)
-            r_pos = {}
-            for pid in (r.get("players") or []):
-                if str(pid) in set(str(p) for p in (r.get("taxi") or [])):
-                    continue
-                p = players_db.get(str(pid))
-                if p:
-                    pos = p.get("position", "")
-                    r_pos[pos] = r_pos.get(pos, 0) + 1
-            other_teams.append(f"{team_name} ({r_wins}-{r_losses}): QB={r_pos.get('QB',0)} RB={r_pos.get('RB',0)} WR={r_pos.get('WR',0)} TE={r_pos.get('TE',0)}")
-
-        league_summaries.append({
-            "name": league["name"],
-            "format": f"{'Dynasty' if is_dynasty else 'Redraft'} · {scoring_type} · {'2QB/SF' if num_qb >= 2 else '1QB'} · {total_teams} teams",
-            "record": f"{wins}-{losses}",
-            "rank": f"#{my_rank}/{total_teams}",
-            "in_playoffs": in_playoffs,
-            "playoff_spots": playoff_spots,
-            "team_name": my_team_name,
-            "starters": my_starters,
-            "bench": my_bench,
-            "pos_counts": pos_counts,
-            "other_teams": other_teams,
-        })
-
-    if not league_summaries:
-        raise HTTPException(status_code=404, detail="No leagues found")
-
-    # Build prompt
-    prompt = f"""You are an expert fantasy football analyst. Analyze the following team data for user "{user.get('display_name', req.username)}" and provide trade suggestions for each league.
-
-For each league, provide:
-1. A ONE-LINE SUMMARY of the team's situation and biggest trade need
-2. 2-3 SPECIFIC trade suggestions including: who to target, what to offer, and why
-
-Focus on:
-- Position surplus vs needs
-- Win-now vs rebuild based on record and roster age
-- Specific players they should target or move
-- Whether they should be buyers or sellers
-
-Keep each league concise but actionable. Use player names where possible.
-
-=== LEAGUE DATA ===
-
-{chr(10).join(f'''
-League: {l["name"]}
-Format: {l["format"]}
-Record: {l["record"]} (Rank {l["rank"]}) {"✅ In playoffs" if l["in_playoffs"] else f"❌ Outside playoffs (top {l['playoff_spots']} qualify)"}
-
-My Starters: {", ".join(l["starters"][:8]) if l["starters"] else "N/A"}
-My Bench: {", ".join(l["bench"][:8]) if l["bench"] else "N/A"}
-Position Counts: {" | ".join(f"{k}:{v}" for k,v in sorted(l["pos_counts"].items()) if k in ("QB","RB","WR","TE"))}
-
-Other Teams (for trade context):
-{chr(10).join("  " + t for t in l["other_teams"])}
----''' for l in league_summaries)}
-
-Respond with clear section headers for each league. Be specific and actionable."""
-
-    # Call Claude
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not set in environment")
-
-    client = anthropic_sdk.Anthropic(api_key=api_key)
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    analysis_text = message.content[0].text if message.content else "No analysis returned."
-
-    # Parse into per-league sections
-    sections = []
-    current_section = None
-    current_lines = []
-
-    for line in analysis_text.split("\n"):
-        # Detect league headers
-        is_header = any(l["name"].lower() in line.lower() for l in league_summaries) and (line.startswith("#") or line.strip().startswith("**") or line.isupper() or "league" in line.lower())
-        matched_league = next((l["name"] for l in league_summaries if l["name"].lower() in line.lower() and (line.startswith("#") or "**" in line or line.strip() == line.strip().upper())), None)
-
-        if matched_league and current_section:
-            sections.append({"league": current_section, "content": "\n".join(current_lines).strip()})
-            current_section = matched_league
-            current_lines = []
-        elif matched_league:
-            current_section = matched_league
-            current_lines = []
-        else:
-            current_lines.append(line)
-
-    if current_section:
-        sections.append({"league": current_section, "content": "\n".join(current_lines).strip()})
-
-    # If parsing failed just return raw
-    if not sections:
-        sections = [{"league": "All Leagues", "content": analysis_text}]
-
-    return {
-        "username": user.get("display_name", req.username),
-        "week": week,
-        "leagues_analyzed": len(league_summaries),
-        "sections": sections,
-        "raw": analysis_text,
-    }

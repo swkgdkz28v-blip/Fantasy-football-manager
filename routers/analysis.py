@@ -500,7 +500,22 @@ async def get_optimal_lineup(req: UserRequest):
     user_id = user["user_id"]
     week = req.week or current_week
 
-    proj_array = await get_projections(season, week)
+    proj_array, stats_array = await asyncio.gather(
+        get_projections(season, week),
+        get_stats(season, week)
+    )
+    stats_map = build_stats_map(stats_array)
+
+    def has_played(pid):
+        return stats_map.get(str(pid), {}).get("gp", 0) >= 1
+
+    def effective_pts(pid, proj_map, player_pts_map=None):
+        if has_played(pid):
+            # Use actual points scored
+            if player_pts_map and str(pid) in player_pts_map:
+                return player_pts_map[str(pid)]
+        return proj_map.get(str(pid), 0)
+
     results = []
     optimal_leagues = []
 
@@ -525,9 +540,10 @@ async def get_optimal_lineup(req: UserRequest):
         my_team_name = (my_user or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
 
         my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
-        week_starters = set(my_matchup.get("starters", []) if my_matchup else my_roster.get("starters", []))
+        week_starters = set(str(pid) for pid in (my_matchup.get("starters", []) if my_matchup else my_roster.get("starters", [])))
+        player_pts_map = my_matchup.get("players_points", {}) if my_matchup else {}
 
-        taxi_ids = set(my_roster.get("taxi") or [])
+        taxi_ids = set(str(pid) for pid in (my_roster.get("taxi") or []))
         pool = []
         for pid in (my_roster.get("players") or []):
             if str(pid) in taxi_ids:
@@ -535,12 +551,15 @@ async def get_optimal_lineup(req: UserRequest):
             p = players_db.get(str(pid))
             if not p:
                 continue
+            played = has_played(pid)
+            pts = effective_pts(pid, proj_map, player_pts_map)
             pool.append({
                 "id": str(pid),
                 "name": player_name(p),
                 "position": p.get("position", "UNK"),
                 "team": p.get("team", "FA"),
-                "pts": proj_map.get(str(pid), 0),
+                "pts": pts,
+                "has_played": played,
                 "injury_status": p.get("injury_status"),
                 "is_starter": str(pid) in week_starters,
             })
@@ -646,31 +665,31 @@ async def get_position_needs(req: UserRequest):
 
         for pos in ALL_POS:
             dedicated = dedicated_slots[pos]
-            is_flex_eligible = any(pos in fs["eligible"] for fs in flex_slots_list)
+            pos_flex_slots = sum(1 for fs in flex_slots_list if pos in fs["eligible"])
+            is_flex_eligible = pos_flex_slots > 0
+
             if dedicated == 0 and not is_flex_eligible:
                 continue
 
             owned = len(players_by_pos[pos])
-            pos_flex = sum(1 for fs in flex_slots_list if pos in fs["eligible"])
 
             if pos == "QB":
-                min_needed = qb_demand + 2
-            elif pos in ("RB", "WR"):
-                min_needed = dedicated + pos_flex + 1
-            elif pos == "TE":
-                min_needed = dedicated + 1
+                min_needed = dedicated + pos_flex_slots + 2
+            elif pos in ("RB", "WR", "TE"):
+                min_needed = dedicated + pos_flex_slots + 1
             else:
                 min_needed = dedicated
 
             if owned >= min_needed:
                 continue
 
-            shortage = dedicated - owned
             if owned == 0 and dedicated > 0:
                 grade = "Empty"
-            elif shortage > 0:
+            elif owned < dedicated:
                 grade = "Underfilled"
-            elif owned < dedicated + 1:
+            elif owned < dedicated + pos_flex_slots:
+                grade = "Flex Short"
+            elif owned < min_needed:
                 grade = "No Depth"
             else:
                 grade = "Thin"
@@ -706,7 +725,14 @@ async def get_upgrade_recommendations(req: UserRequest):
     week = req.week or current_week
     weeks_completed = min(week - 1, current_week - 1)
 
-    proj_array = await get_projections(season, week)
+    proj_array, stats_array = await asyncio.gather(
+        get_projections(season, week),
+        get_stats(season, week)
+    )
+    stats_map = build_stats_map(stats_array)
+
+    def has_played(pid):
+        return stats_map.get(str(pid), {}).get("gp", 0) >= 1
 
     ytd_stats_map = {}
     if weeks_completed > 0:
@@ -755,32 +781,49 @@ async def get_upgrade_recommendations(req: UserRequest):
         taxi_ids = set(str(pid) for pid in (my_roster.get("taxi") or []))
 
         pool = []
-        for pid in my_roster.get("players", []):
+        for pid in (my_roster.get("players") or []):
             if str(pid) in taxi_ids:
                 continue
             p = players_db.get(str(pid))
             if not p:
                 continue
+            played = has_played(pid)
             wp, ya, bl = score_player(pid)
-            pool.append({"id": str(pid), "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team", ""), "week_pts": wp, "ytd_avg": ya, "blended": bl, "is_starter": str(pid) in week_starters})
+            pool.append({
+                "id": str(pid),
+                "name": player_name(p),
+                "position": p.get("position", "UNK"),
+                "team": p.get("team", ""),
+                "week_pts": wp,
+                "ytd_avg": ya,
+                "blended": bl,
+                "has_played": played,
+                "is_starter": str(pid) in week_starters,
+            })
         pool.sort(key=lambda x: -x["blended"])
 
+        # Greedy optimal: dedicated slots first then flex, lock played players first
         slots_sorted = sorted(starter_slots, key=lambda s: len(SLOT_ELIGIBILITY.get(s, [s])))
         assigned = set()
         optimal = []
         for slot in slots_sorted:
             eligible = SLOT_ELIGIBILITY.get(slot, [slot])
-            best = next((p for p in pool if p["position"] in eligible and p["id"] not in assigned), None)
-            if best:
-                assigned.add(best["id"])
-                optimal.append({"slot": slot, "player": best})
+            played_match = next((p for p in pool if p["position"] in eligible and p["id"] not in assigned and p["has_played"]), None)
+            if played_match:
+                assigned.add(played_match["id"])
+                optimal.append({"slot": slot, "player": played_match})
+            else:
+                best = next((p for p in pool if p["position"] in eligible and p["id"] not in assigned), None)
+                if best:
+                    assigned.add(best["id"])
+                    optimal.append({"slot": slot, "player": best})
 
         starters = [p for p in pool if p["is_starter"]]
         current_pts = round(sum(p["blended"] for p in starters), 1)
-        optimal_pts = round(sum(o["player"]["blended"] for o in optimal), 1)
+        optimal_pts = round(sum(o["player"]["blended"] for o in optimal if o["player"]), 1)
         gain = round(optimal_pts - current_pts, 1)
 
-        should_start = [o["player"] for o in optimal if not o["player"]["is_starter"]]
+        should_start = [o["player"] for o in optimal if o["player"] and not o["player"]["is_starter"]]
         should_bench = [p for p in starters if p["id"] not in assigned]
         bench = [p for p in pool if p["id"] not in assigned]
 
@@ -1159,7 +1202,14 @@ async def get_starter_upgrades(req: UserRequest):
     user_id = user["user_id"]
     week = req.week or current_week
 
-    proj_array = await get_projections(season, week)
+    proj_array, stats_array = await asyncio.gather(
+        get_projections(season, week),
+        get_stats(season, week)
+    )
+    stats_map = build_stats_map(stats_array)
+
+    def has_played(pid):
+        return stats_map.get(str(pid), {}).get("gp", 0) >= 1
     results = []
 
     for league in leagues:
@@ -1210,9 +1260,12 @@ async def get_starter_upgrades(req: UserRequest):
                 "is_fa": is_fa,
             }
 
-        my_starters_list = [p for pid in starter_ids if (p := enrich(pid, is_starter=True)) is not None]
+        my_starters_list = [p for pid in starter_ids
+                             if not has_played(pid)  # exclude already-played starters
+                             if (p := enrich(pid, is_starter=True)) is not None]
         my_bench = [p for pid in (my_roster.get("players") or [])
                     if str(pid) not in starter_ids and str(pid) not in taxi_ids
+                    if not has_played(pid)  # exclude played bench players
                     if (p := enrich(pid)) is not None]
 
         # Match starters to slots using greedy assignment (dedicated slots first)
@@ -1382,19 +1435,24 @@ async def get_bench_vs_fa(req: UserRequest):
             fa_by_pos[pos].sort(key=lambda x: -x["pts"])
 
         # Find drops: bench players worse than available FAs at same position
+        # Each FA can only be recommended once (deduplicate)
         drops = []
         MIN_GAIN = 2.0
-        for bench_p in my_bench:
+        used_fas = set()
+        for bench_p in sorted(my_bench, key=lambda x: x["pts"]):  # weakest bench first
             pos = bench_p["position"]
-            best_fa = (fa_by_pos.get(pos) or [None])[0]
+            # Find best unused FA at this position
+            best_fa = next((fa for fa in (fa_by_pos.get(pos) or [])
+                           if fa["id"] not in used_fas
+                           and fa["pts"] > bench_p["pts"] + MIN_GAIN), None)
             if not best_fa:
                 continue
-            if best_fa["pts"] > bench_p["pts"] + MIN_GAIN:
-                drops.append({
-                    "drop": bench_p,
-                    "add": best_fa,
-                    "gain": round(best_fa["pts"] - bench_p["pts"], 1),
-                })
+            used_fas.add(best_fa["id"])
+            drops.append({
+                "drop": bench_p,
+                "add": best_fa,
+                "gain": round(best_fa["pts"] - bench_p["pts"], 1),
+            })
 
         drops.sort(key=lambda x: -x["gain"])
 

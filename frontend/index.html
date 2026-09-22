@@ -824,6 +824,106 @@ function BenchVsFaView({ data }) {
 }
 
 
+
+// ── WEEK REVIEW VIEW ──────────────────────────────────────────────────────────
+function WeekReviewView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No matchup data found for that week.'));
+  const S = data.summary || {};
+  const GRADE_COLOR = { A: 'var(--accent)', B: 'var(--accent4)', C: 'var(--accent3)', D: '#ff8c42', F: 'var(--accent2)' };
+  const gradeChips = Object.entries(S.grades || {}).filter(([, n]) => n > 0);
+
+  const DiffRow = ({ p }) => e('div', { className: 'player-row' },
+    e(PosBadge, { pos: p.position }),
+    e('span', { className: 'player-name' }, p.name),
+    e('span', { className: 'player-team' }, p.team),
+    e('span', { style: { fontSize: 10, color: 'var(--text3)' } }, `proj ${p.proj?.toFixed(1)}`),
+    e('span', { className: 'player-pts', style: { color: p.diff < 0 ? 'var(--accent2)' : 'var(--accent)' } },
+      `${p.pts?.toFixed(1)} (${p.diff > 0 ? '+' : ''}${p.diff})`)
+  );
+
+  return e('div', null,
+    !data.week_done && e(Alert, { type: 'info' }, e('p', null, `Week ${data.week} isn't finished yet — this is a partial review.`)),
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: `${S.wins}-${S.losses}`, label: 'Week Record', color: 'var(--accent)' }),
+      e(StatTile, { value: `${S.avg_efficiency}%`, label: 'Avg Efficiency', color: 'var(--accent4)' }),
+      e(StatTile, { value: S.total_left_on_bench, label: 'Pts On Bench', color: 'var(--accent3)' }),
+      e(StatTile, { value: S.cost_games, label: 'Lineup Cost A Win', color: S.cost_games ? 'var(--accent2)' : 'var(--text3)' })
+    ),
+    gradeChips.length > 0 && e('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16 } },
+      gradeChips.map(([g, n]) => e('div', { key: g, style: { padding: '5px 12px', borderRadius: 20, border: `1px solid ${GRADE_COLOR[g]}`, color: GRADE_COLOR[g], fontSize: 12, fontWeight: 700 } }, `${g}: ${n}`))
+    ),
+    data.results.map(r => {
+      const gc = GRADE_COLOR[r.grade];
+      const resColor = r.won ? 'var(--accent)' : r.won === false ? 'var(--accent2)' : 'var(--text3)';
+      return e(Card, { key: r.league, borderColor: gc },
+        e('div', { className: 'card-header' },
+          e('div', null,
+            e('div', { className: 'card-title' }, r.league),
+            e('div', { className: 'card-subtitle' }, `${r.team ? r.team + ' · ' : ''}vs ${r.opp_name}`)
+          ),
+          e('div', { style: { textAlign: 'right' } },
+            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.8rem', color: gc, lineHeight: 1 } }, r.grade),
+            e('div', { style: { fontSize: 12, fontWeight: 700, color: resColor } },
+              `${r.won ? 'W' : r.won === false ? 'L' : '—'} ${r.my_pts?.toFixed(1)}–${r.opp_pts?.toFixed(1) ?? '?'}`)
+          )
+        ),
+        r.cost_the_game && e(Alert, { type: 'error' }, e('p', null,
+          `Your optimal lineup (${r.optimal_pts.toFixed(1)}) would have beaten ${r.opp_name} (${r.opp_pts.toFixed(1)}). This one was left on the bench.`)),
+        e('div', { style: { marginBottom: 12 } },
+          e('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 } },
+            e('span', { style: { color: 'var(--text3)' } }, 'Lineup efficiency'),
+            e('span', { style: { color: gc, fontWeight: 700 } }, `${r.efficiency}% · ${r.starter_pts.toFixed(1)} of ${r.optimal_pts.toFixed(1)} possible`)
+          ),
+          e('div', { className: 'bar-track', style: { height: 8 } }, e('div', { className: 'bar-fill', style: { width: `${r.efficiency}%`, background: gc } }))
+        ),
+        r.missed_swaps?.length > 0
+          ? e('div', { style: { marginBottom: 12 } },
+              e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent3)', marginBottom: 6 } }, `🪑 Left On Bench · ${r.left_on_bench.toFixed(1)} pts`),
+              r.missed_swaps.map((sw, i) => e('div', { key: i, className: 'swap-card' },
+                e('div', null,
+                  e('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 } }, sw.in && e(PosBadge, { pos: sw.in.position }), e('span', { style: { fontSize: 11, fontWeight: 700, color: 'var(--accent)' } }, `SHOULD HAVE STARTED @ ${sw.slot}`)),
+                  e('div', { style: { fontSize: 12, fontWeight: 600 } }, sw.in?.name),
+                  e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${sw.in?.team} · scored ${sw.in?.pts?.toFixed(1)}`)
+                ),
+                e('div', { style: { textAlign: 'center', fontSize: 12, fontWeight: 700, color: 'var(--accent3)' } }, `+${((sw.in?.pts || 0) - (sw.out?.pts || 0)).toFixed(1)}`),
+                e('div', null,
+                  e('div', { style: { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 } }, sw.out && e(PosBadge, { pos: sw.out.position }), e('span', { style: { fontSize: 11, fontWeight: 700, color: 'var(--accent2)' } }, sw.out ? 'INSTEAD OF' : 'EMPTY SLOT')),
+                  e('div', { style: { fontSize: 12, fontWeight: 600 } }, sw.out?.name || '—'),
+                  e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, sw.out ? `${sw.out.team} · scored ${sw.out.pts?.toFixed(1)}` : '')
+                )
+              ))
+            )
+          : e('div', { style: { fontSize: 12, color: 'var(--accent)', marginBottom: 12 } }, '✅ You started your best possible lineup.'),
+        r.underachievers?.length > 0 && e('div', { style: { marginBottom: 12 } },
+          e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent2)', marginBottom: 6 } }, '📉 Underachievers'),
+          r.underachievers.map(p => e(DiffRow, { key: p.id, p }))
+        ),
+        r.overachievers?.length > 0 && e('div', { style: { marginBottom: 12 } },
+          e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 6 } }, '📈 Overachievers'),
+          r.overachievers.map(p => e(DiffRow, { key: p.id, p }))
+        ),
+        e('div', { style: { borderTop: '1px solid var(--border)', paddingTop: 12 } },
+          e('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 } },
+            e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent4)' } }, `➡️ Week ${r.next_week} Recommendations`),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `current ${r.next_current_pts} → optimal ${r.next_optimal_pts}`)
+          ),
+          r.next_flags?.map(p => e('div', { key: p.id, style: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: 'rgba(255,92,92,0.08)', border: '1px solid rgba(255,92,92,0.3)', borderRadius: 6, marginBottom: 4, fontSize: 12 } },
+            e(PosBadge, { pos: p.position }), e('span', { style: { flex: 1 } }, p.name),
+            e(Tag, { color: 'red' }, p.on_bye ? 'ON BYE' : (p.injury_status || '').toUpperCase())
+          )),
+          r.still_starting_under?.map(p => e('div', { key: 'u' + p.id, style: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: 'rgba(255,179,71,0.06)', border: '1px solid rgba(255,179,71,0.3)', borderRadius: 6, marginBottom: 4, fontSize: 12 } },
+            e(PosBadge, { pos: p.position }), e('span', { style: { flex: 1 } }, p.name),
+            e(Tag, { color: 'orange' }, 'UNDERPERFORMED · STILL STARTING')
+          )),
+          r.next_swaps?.length > 0
+            ? e(SwapList, { swaps: r.next_swaps, ptsKey: 'pts' })
+            : e('div', { style: { fontSize: 12, color: 'var(--accent)' } }, '✅ Lineup already optimal for next week.')
+        )
+      );
+    })
+  );
+}
+
 // ── WEEK ANALYSIS VIEW ────────────────────────────────────────────────────────
 function WeekAnalysisView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No matchup data found.'));
@@ -1025,6 +1125,7 @@ const SECTIONS = [
     label: 'Lineup & Schedule',
     features: [
       { id: 'week-analysis', label: '📊 Week Analysis', endpoint: '/analysis/week', needsWeek: true },
+      { id: 'week-review', label: '📝 Week Review', endpoint: '/analysis/week-review', needsWeek: true },
       { id: 'week-record', label: '🎯 Week Record', endpoint: '/analysis/week-record', needsWeek: true },
       { id: 'theres-a-chance', label: '🎲 There\'s A Chance', endpoint: '/analysis/theres-a-chance' },
     ]
@@ -1164,6 +1265,8 @@ function App() {
         return e(PositionNeedsView, { data });
       case 'week-analysis':
         return e(WeekAnalysisView, { data });
+      case 'week-review':
+        return e(WeekReviewView, { data });
       case 'upgrade':
         return e(UpgradeRecsView, { data });
       case 'season-forecast':

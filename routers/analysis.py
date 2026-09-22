@@ -1384,3 +1384,141 @@ async def get_bench_vs_fa(req: UserRequest):
     results.sort(key=lambda r: -len(r["drops"]))
     return {"week": week, "results": results}
 
+
+# ── WEEK REVIEW ───────────────────────────────────────────────────────────────
+
+@router.post("/analysis/week-review")
+async def get_week_review(req: WeekRequest):
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week
+    next_week = week + 1
+    UNDER_PCT, UNDER_MIN_PROJ, UNDER_MIN_DIFF = 0.60, 8.0, 5.0
+
+    proj_array, next_proj_array, stats_array = await asyncio.gather(
+        get_projections(season, week), get_projections(season, next_week), get_stats(season, week)
+    )
+    stats_map = build_stats_map(stats_array)
+    never_played = lambda pid: False          # hindsight: everyone is fair game
+    week_done = week < current_week
+
+    results = []
+    for league in leagues:
+        if league.get("status") == "complete":
+            continue
+        ss = league.get("scoring_settings") or {}
+        proj_map = build_proj_map(proj_array, ss)
+        next_proj_map = build_proj_map(next_proj_array, ss)
+        starter_slots = [s for s in league.get("roster_positions", []) if s not in ("BN", "IR", "TAXI")]
+
+        rosters, league_users, matchups, next_matchups = await asyncio.gather(
+            get_rosters(league["league_id"]), get_league_users(league["league_id"]),
+            get_matchups(league["league_id"], week), get_matchups(league["league_id"], next_week),
+        )
+        my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my_roster:
+            continue
+        my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
+        if not my_matchup:
+            continue
+        opp_matchup = next((m for m in matchups if m["matchup_id"] == my_matchup["matchup_id"]
+                            and m["roster_id"] != my_roster["roster_id"]), None)
+
+        user_lookup = {u["user_id"]: u for u in league_users}
+        roster_lookup = {r["roster_id"]: r for r in rosters}
+        my_user = user_lookup.get(user_id)
+        my_team_name = (my_user or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
+        opp_user = user_lookup.get((roster_lookup.get(opp_matchup["roster_id"]) or {}).get("owner_id")) if opp_matchup else None
+        opp_name = (opp_user or {}).get("metadata", {}).get("team_name") or (opp_user or {}).get("display_name", "Opponent")
+
+        actual = my_matchup.get("players_points") or {}
+        starters_ordered = [str(s) for s in (my_matchup.get("starters") or [])]
+        starter_set = set(starters_ordered)
+        taxi_ids = set(str(t) for t in (my_roster.get("taxi") or []))
+
+        # ── Pool with actual + projected for the reviewed week ──
+        pool = []
+        for pid in (my_roster.get("players") or []):
+            pid = str(pid)
+            if pid in taxi_ids:
+                continue
+            p = players_db.get(pid)
+            if not p:
+                continue
+            pool.append({
+                "id": pid, "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team", "FA"),
+                "pts": round(actual.get(pid, 0), 2), "proj": proj_map.get(pid, 0),
+                "played": stats_map.get(pid, {}).get("gp", 0) >= 1,
+                "is_starter": pid in starter_set, "injury_status": p.get("injury_status"),
+            })
+        by_id = {p["id"]: p for p in pool}
+
+        my_pts = round(my_matchup.get("points", 0), 2)
+        opp_pts = round(opp_matchup.get("points", 0), 2) if opp_matchup else None
+        won = (my_pts > opp_pts) if opp_pts is not None else None
+
+        # ── Hindsight optimal ──
+        hind = compute_lineup(starter_slots, starters_ordered, pool, never_played, key="pts")
+        optimal_pts = round(sum((s["optimal"] or {}).get("pts", 0) for s in hind), 2)
+        starter_pts = round(sum((s["current"] or {}).get("pts", 0) for s in hind), 2)
+        left_on_bench = round(optimal_pts - starter_pts, 2)
+        efficiency = round(starter_pts / optimal_pts * 100, 1) if optimal_pts > 0 else 100.0
+        grade = "A" if efficiency >= 97 else "B" if efficiency >= 90 else "C" if efficiency >= 80 else "D" if efficiency >= 70 else "F"
+        missed = [{"slot": s["slot"], "out": s["current"], "in": s["optimal"]} for s in hind
+                  if s["optimal"] and (s["current"] is None or s["current"]["id"] != s["optimal"]["id"])]
+        cost_the_game = bool(won is False and opp_pts is not None and optimal_pts > opp_pts)
+
+        # ── Under / over achievers among starters ──
+        under, over = [], []
+        for pid in starters_ordered:
+            p = by_id.get(pid)
+            if not p or not p["played"]:
+                continue
+            diff = round(p["pts"] - p["proj"], 1)
+            if p["proj"] >= UNDER_MIN_PROJ and (p["pts"] < p["proj"] * UNDER_PCT or diff <= -UNDER_MIN_DIFF):
+                under.append({**p, "diff": diff})
+            elif diff >= UNDER_MIN_DIFF:
+                over.append({**p, "diff": diff})
+        under.sort(key=lambda x: x["diff"]); over.sort(key=lambda x: -x["diff"])
+
+        # ── Next week recs ──
+        nxt_matchup = next((m for m in next_matchups if m["roster_id"] == my_roster["roster_id"]), None)
+        nxt_starters = [str(s) for s in ((nxt_matchup or my_roster).get("starters") or [])]
+        nxt_set = set(nxt_starters)
+        nxt_pool = []
+        for p in pool:
+            pl = players_db.get(p["id"]) or {}
+            bye = pl.get("bye_week")
+            nxt_pool.append({**p, "pts": next_proj_map.get(p["id"], 0), "is_starter": p["id"] in nxt_set,
+                             "on_bye": bool(bye and int(bye) == next_week)})
+        nxt = compute_lineup(starter_slots, nxt_starters, nxt_pool, never_played, key="pts")
+        next_swaps = [{"slot": s["slot"], "out": s["current"], "in": s["optimal"]} for s in nxt
+                      if s["optimal"] and (s["current"] is None or s["current"]["id"] != s["optimal"]["id"])]
+        next_cur = round(sum((s["current"] or {}).get("pts", 0) for s in nxt), 1)
+        next_opt = round(sum((s["optimal"] or {}).get("pts", 0) for s in nxt), 1)
+        next_flags = [p for p in nxt_pool if p["is_starter"] and (p["on_bye"] or
+                      (p.get("injury_status") or "").lower() in ("out", "ir", "pup", "sus", "doubtful"))]
+        under_ids = {u["id"] for u in under}
+        still_starting_under = [p for p in nxt_pool if p["is_starter"] and p["id"] in under_ids]
+
+        results.append({
+            "league": league["name"], "team": my_team_name, "opp_name": opp_name,
+            "won": won, "my_pts": my_pts, "opp_pts": opp_pts,
+            "optimal_pts": optimal_pts, "starter_pts": starter_pts, "left_on_bench": left_on_bench,
+            "efficiency": efficiency, "grade": grade, "cost_the_game": cost_the_game,
+            "missed_swaps": missed, "underachievers": under, "overachievers": over[:3],
+            "next_week": next_week, "next_swaps": next_swaps, "next_current_pts": next_cur,
+            "next_optimal_pts": next_opt, "next_flags": next_flags, "still_starting_under": still_starting_under,
+        })
+
+    grade_order = {"F": 0, "D": 1, "C": 2, "B": 3, "A": 4}
+    results.sort(key=lambda r: (grade_order.get(r["grade"], 9), -r["left_on_bench"]))
+    summary = {
+        "wins": sum(1 for r in results if r["won"] is True),
+        "losses": sum(1 for r in results if r["won"] is False),
+        "total_left_on_bench": round(sum(r["left_on_bench"] for r in results), 1),
+        "cost_games": sum(1 for r in results if r["cost_the_game"]),
+        "avg_efficiency": round(sum(r["efficiency"] for r in results) / len(results), 1) if results else 0,
+        "grades": {g: sum(1 for r in results if r["grade"] == g) for g in "ABCDF"},
+    }
+    return {"week": week, "week_done": week_done, "summary": summary, "results": results}

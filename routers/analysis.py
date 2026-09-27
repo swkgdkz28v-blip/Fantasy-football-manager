@@ -179,6 +179,68 @@ async def get_open_starter_spots(req: UserRequest):
 
     return {"results": results}
 
+@router.post("/alerts/zero-projection-starters")
+async def get_zero_projection_starters(req: UserRequest):
+    """Starters projected for 0 points who have not played yet (bye, injured, no team, or no projection)."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    week = req.week or current_week
+    user_id = user["user_id"]
+
+    proj_array, stats_array = await asyncio.gather(get_projections(season, week), get_stats(season, week))
+    stats_map = build_stats_map(stats_array)
+    has_played = lambda pid: stats_map.get(str(pid), {}).get("gp", 0) >= 1
+
+    results = []
+    for league in leagues:
+        if league.get("status") == "complete":
+            continue
+        ss = league.get("scoring_settings") or {}
+        proj_map = build_proj_map(proj_array, ss)
+        starter_slots = [x for x in league.get("roster_positions", []) if x not in ("BN", "IR", "TAXI")]
+
+        rosters, league_users, matchups = await asyncio.gather(
+            get_rosters(league["league_id"]), get_league_users(league["league_id"]), get_matchups(league["league_id"], week)
+        )
+        my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my_roster:
+            continue
+        my_user = next((u for u in league_users if u["user_id"] == user_id), None)
+        my_team_name = (my_user or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
+        my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
+        starters = [str(x) for x in ((my_matchup or my_roster).get("starters") or [])]
+
+        flagged = []
+        for i, pid in enumerate(starters):
+            if not pid or pid == "0":
+                continue
+            if has_played(pid):
+                continue
+            if proj_map.get(pid, 0) > 0:
+                continue
+            p = players_db.get(pid) or {}
+            bye = p.get("bye_week")
+            inj = (p.get("injury_status") or "").upper()
+            team = p.get("team")
+            if bye and int(bye) == week:
+                reason = f"On bye (week {bye})"
+            elif inj in ("OUT", "IR", "PUP", "SUS", "NA"):
+                reason = f"Injury: {inj}"
+            elif not team or team == "FA":
+                reason = "No NFL team"
+            elif inj:
+                reason = f"No projection · {inj}"
+            else:
+                reason = "No projection"
+            flagged.append({
+                "slot": starter_slots[i] if i < len(starter_slots) else "?",
+                "id": pid, "name": player_name(p) or pid, "position": p.get("position", "UNK"),
+                "team": team or "FA", "status": reason, "injury_status": p.get("injury_status"),
+            })
+        if flagged:
+            results.append({"league": league["name"], "team": my_team_name, "zero_starters": flagged})
+
+    return {"week": week, "results": results}
+
 # ── WEEK ANALYSIS ─────────────────────────────────────────────────────────────
 
 @router.post("/analysis/week")
@@ -495,6 +557,52 @@ async def get_theres_a_chance(req: UserRequest):
 
 # ── SHARED LINEUP HELPER ──────────────────────────────────────────────────────
 
+def _assign_max_weight(W):
+    """
+    Max-weight assignment of rows -> columns (len(rows) <= len(cols)).
+    Hungarian algorithm (O(n^2 m)). Returns col index for each row.
+    """
+    n = len(W)
+    if n == 0:
+        return []
+    m = len(W[0])
+    INF = float("inf")
+    C = [[-w for w in row] for row in W]            # minimize negated weights
+    u = [0.0] * (n + 1); v = [0.0] * (m + 1)
+    p = [0] * (m + 1); way = [0] * (m + 1)
+    for i in range(1, n + 1):
+        p[0] = i; j0 = 0
+        minv = [INF] * (m + 1); used = [False] * (m + 1)
+        while True:
+            used[j0] = True
+            i0 = p[j0]; delta = INF; j1 = 0
+            for j in range(1, m + 1):
+                if used[j]:
+                    continue
+                cur = C[i0 - 1][j - 1] - u[i0] - v[j]
+                if cur < minv[j]:
+                    minv[j] = cur; way[j] = j0
+                if minv[j] < delta:
+                    delta = minv[j]; j1 = j
+            for j in range(m + 1):
+                if used[j]:
+                    u[p[j]] += delta; v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+            if p[j0] == 0:
+                break
+        while True:
+            j1 = way[j0]; p[j0] = p[j1]; j0 = j1
+            if j0 == 0:
+                break
+    out = [-1] * n
+    for j in range(1, m + 1):
+        if p[j]:
+            out[p[j] - 1] = j - 1
+    return out
+
+
 def compute_lineup(starter_slots, starters_ordered, pool, has_played, key="pts"):
     """
     starter_slots:    ordered slot names from league.roster_positions (BN/IR/TAXI removed)
@@ -505,7 +613,9 @@ def compute_lineup(starter_slots, starters_ordered, pool, has_played, key="pts")
     Rules:
       - A starter whose game is over is LOCKED into its slot.
       - A bench player whose game is over cannot be started.
-      - Only unplayed slots are optimized, most-restrictive slot first.
+      - Open slots are filled by an exact max-weight assignment, so QB/SUPER_FLEX
+        and FLEX interactions are solved globally (a QB may move QB<->SF, etc.).
+      - Ties break toward leaving a player in the slot they already occupy.
     Returns ordered list of {slot, current, optimal, locked}.
     """
     n = len(starter_slots)
@@ -516,54 +626,70 @@ def compute_lineup(starter_slots, starters_ordered, pool, has_played, key="pts")
         current.append(by_id.get(sid) if sid and sid != "0" else None)
 
     result = [None] * n
-    assigned = set()
-
-    # 1. Lock played starters
+    locked_ids = set()
     for i in range(n):
         cur = current[i]
         if cur and has_played(cur["id"]):
             result[i] = {"slot": starter_slots[i], "current": cur, "optimal": cur, "locked": True}
-            assigned.add(cur["id"])
+            locked_ids.add(cur["id"])
 
-    # 2. Candidates = unplayed players not already locked
-    candidates = sorted(
-        [p for p in pool if p["id"] not in assigned and not has_played(p["id"])],
-        key=lambda p: -p.get(key, 0)
-    )
+    open_idx = [i for i in range(n) if result[i] is None]
+    cands = [p for p in pool if p["id"] not in locked_ids and not has_played(p["id"])]
 
-    # 3. Fill open slots, most restrictive first
-    open_idx = sorted(
-        [i for i in range(n) if result[i] is None],
-        key=lambda i: len(SLOT_ELIGIBILITY.get(starter_slots[i], [starter_slots[i]]))
-    )
-    chosen = []
-    for i in open_idx:
-        elig = SLOT_ELIGIBILITY.get(starter_slots[i], [starter_slots[i]])
-        best = next((p for p in candidates if p["position"] in elig and p["id"] not in assigned), None)
-        if best:
-            assigned.add(best["id"])
-            chosen.append(best)
-
-    # 4. Stabilize: place the chosen set with minimum churn.
-    #    Keep a current starter in their slot if they made the cut; fill the rest.
-    chosen_ids = {p["id"] for p in chosen}
-    placed = set()
-    for i in open_idx:
-        cur = current[i]
-        if cur and cur["id"] in chosen_ids and cur["id"] not in placed:
-            result[i] = {"slot": starter_slots[i], "current": cur, "optimal": cur, "locked": False}
-            placed.add(cur["id"])
-    leftover = sorted([p for p in chosen if p["id"] not in placed], key=lambda p: -p.get(key, 0))
-    for i in open_idx:
-        if result[i] is not None:
-            continue
-        elig = SLOT_ELIGIBILITY.get(starter_slots[i], [starter_slots[i]])
-        pick = next((p for p in leftover if p["position"] in elig), None)
-        if pick:
-            leftover.remove(pick)
-        result[i] = {"slot": starter_slots[i], "current": current[i], "optimal": pick, "locked": False}
+    if open_idx:
+        NEG = -1e12
+        k = len(cands)
+        pad = len(open_idx)                       # one "leave empty" column per open slot
+        W = []
+        for i in open_idx:
+            elig = SLOT_ELIGIBILITY.get(starter_slots[i], [starter_slots[i]])
+            row = []
+            for c in cands:
+                if c["position"] in elig:
+                    w = float(c.get(key, 0) or 0) * 10000.0
+                    if current[i] and current[i]["id"] == c["id"]:
+                        w += 1.0                  # stay-in-place tiebreak
+                    row.append(w)
+                else:
+                    row.append(NEG)
+            row.extend([0.0] * pad)
+            W.append(row)
+        assign = _assign_max_weight(W)
+        for r, i in enumerate(open_idx):
+            c = assign[r]
+            pick = cands[c] if 0 <= c < k and W[r][c] > NEG / 2 else None
+            result[i] = {"slot": starter_slots[i], "current": current[i], "optimal": pick, "locked": False}
 
     return result
+
+
+def lineup_moves(lineup):
+    """
+    Turn a compute_lineup result into human moves:
+      start: bench -> slot        bench: slot -> bench        move: slot -> slot
+    Returns (moves, swaps) where swaps is the per-slot diff [{slot, out, in}].
+    """
+    cur_slot = {}; opt_slot = {}
+    for s in lineup:
+        if s["current"]:
+            cur_slot[s["current"]["id"]] = s
+        if s["optimal"]:
+            opt_slot[s["optimal"]["id"]] = s
+    moves = []
+    for pid, s in opt_slot.items():
+        if pid not in cur_slot:
+            moves.append({"type": "start", "player": s["optimal"], "to_slot": s["slot"]})
+        elif cur_slot[pid]["slot"] != s["slot"] or cur_slot[pid] is not s:
+            if cur_slot[pid] is not s:
+                moves.append({"type": "move", "player": s["optimal"], "from_slot": cur_slot[pid]["slot"], "to_slot": s["slot"]})
+    for pid, s in cur_slot.items():
+        if pid not in opt_slot and not s["locked"]:
+            moves.append({"type": "bench", "player": s["current"], "from_slot": s["slot"]})
+    order = {"start": 0, "move": 1, "bench": 2}
+    moves.sort(key=lambda m: (order[m["type"]], -(m["player"].get("pts") or 0)))
+    swaps = [{"slot": s["slot"], "out": s["current"], "in": s["optimal"]} for s in lineup
+             if not s["locked"] and (s["optimal"] or {}).get("id") != (s["current"] or {}).get("id")]
+    return moves, swaps
 
 # ── OPTIMAL LINEUP ────────────────────────────────────────────────────────────
 
@@ -620,22 +746,18 @@ async def get_optimal_lineup(req: UserRequest):
         optimal_pts = round(sum((s["optimal"] or {}).get("pts", 0) for s in lineup), 2)
         gain = round(optimal_pts - current_pts, 2)
 
-        swaps = [s for s in lineup if not s["locked"] and s["optimal"]
-                 and (s["current"] is None or s["current"]["id"] != s["optimal"]["id"])]
-        should_start = [s["optimal"] for s in swaps if not s["optimal"]["is_starter"]]
-        should_bench = [s["current"] for s in swaps if s["current"]]
+        moves, swaps = lineup_moves(lineup)
         used = {s["optimal"]["id"] for s in lineup if s["optimal"]}
         bench = [p for p in pool if p["id"] not in used]
 
-        if gain <= 0 or not swaps:
+        if gain < 0.5 or not moves:
             optimal_leagues.append({"league": league["name"], "team": my_team_name, "pts": current_pts})
         else:
             results.append({
                 "league": league["name"], "team": my_team_name,
                 "optimal_pts": optimal_pts, "current_pts": current_pts, "gain": gain,
                 "lineup": [{"slot": s["slot"], "player": s["optimal"], "locked": s["locked"]} for s in lineup],
-                "should_start": should_start, "should_bench": should_bench, "bench": bench,
-                "swaps": [{"slot": s["slot"], "out": s["current"], "in": s["optimal"]} for s in swaps],
+                "moves": moves, "swaps": swaps, "bench": bench,
                 "locked_count": sum(1 for s in lineup if s["locked"]),
             })
 
@@ -706,10 +828,22 @@ async def get_position_needs(req: UserRequest):
 
             owned = len(players_by_pos[pos])
 
+            # Flex demand is SHARED: each flex slot contributes 1/len(eligible) to every eligible position,
+            # except SUPER_FLEX which is treated as a QB slot (QB is the dominant SF play).
+            flex_share = 0.0
+            for fs in flex_slots_list:
+                if pos not in fs["eligible"]:
+                    continue
+                if fs["slot_type"] == "SUPER_FLEX":
+                    flex_share += 1.0 if pos == "QB" else 0.0
+                else:
+                    flex_share += 1.0 / len(fs["eligible"])
+            flex_need = int(flex_share + 0.5)          # round half up
+
             if pos == "QB":
-                min_needed = dedicated + pos_flex_slots + 2
+                min_needed = dedicated + flex_need + 2   # QB depth matters more (bye/injury in SF)
             elif pos in ("RB", "WR", "TE"):
-                min_needed = dedicated + pos_flex_slots + 1
+                min_needed = dedicated + flex_need + 1
             else:
                 min_needed = dedicated
 
@@ -720,7 +854,7 @@ async def get_position_needs(req: UserRequest):
                 grade = "Empty"
             elif owned < dedicated:
                 grade = "Underfilled"
-            elif owned < dedicated + pos_flex_slots:
+            elif owned < dedicated + flex_need:
                 grade = "Flex Short"
             elif owned < min_needed:
                 grade = "No Depth"
@@ -742,6 +876,8 @@ async def get_position_needs(req: UserRequest):
                 "team": my_team_name,
                 "owned": owned,
                 "needed": dedicated,
+                "flex_need": flex_need,
+                "min_needed": min_needed,
                 "grade": grade,
                 "players": players_by_pos[pos],
                 "format_notes": format_notes,
@@ -818,16 +954,13 @@ async def get_upgrade_recommendations(req: UserRequest):
         lineup = compute_lineup(starter_slots, starters_ordered, pool, has_played, key="blended")
         current_pts = round(sum((s["current"] or {}).get("blended", 0) for s in lineup), 1)
         optimal_pts = round(sum((s["optimal"] or {}).get("blended", 0) for s in lineup), 1)
-        swaps = [s for s in lineup if not s["locked"] and s["optimal"]
-                 and (s["current"] is None or s["current"]["id"] != s["optimal"]["id"])]
+        moves, swaps = lineup_moves(lineup)
         used = {s["optimal"]["id"] for s in lineup if s["optimal"]}
 
         results.append({
             "league": league["name"], "team": my_team_name,
             "optimal_pts": optimal_pts, "current_pts": current_pts, "gain": round(optimal_pts - current_pts, 1),
-            "should_start": [s["optimal"] for s in swaps if not s["optimal"]["is_starter"]],
-            "should_bench": [s["current"] for s in swaps if s["current"]],
-            "swaps": [{"slot": s["slot"], "out": s["current"], "in": s["optimal"]} for s in swaps],
+            "moves": moves, "swaps": swaps,
             "lineup": [{"slot": s["slot"], "player": s["optimal"], "locked": s["locked"]} for s in lineup],
             "locked_count": sum(1 for s in lineup if s["locked"]),
             "bench": [p for p in pool if p["id"] not in used][:8],
@@ -1244,26 +1377,37 @@ async def get_starter_upgrades(req: UserRequest):
             key=lambda x: -x["pts"]
         )[:150]
 
-        upgrades, locked = [], 0
-        for i, slot in enumerate(starter_slots):
-            sid = starters_ordered[i] if i < len(starters_ordered) else ""
-            if not sid or sid == "0":
+        # Roster pool = current starters + unplayed bench (played starters lock inside compute_lineup)
+        roster_pool = [e for pid in starters_ordered if pid and pid != "0" if (e := enrich(pid))] + bench
+        lineup = compute_lineup(starter_slots, starters_ordered, roster_pool, has_played, key="pts")
+        moves, _ = lineup_moves(lineup)
+        locked = sum(1 for x in lineup if x["locked"])
+
+        moved_ids = {m["player"]["id"] for m in moves if m["type"] == "move"}
+        upgrades = []
+        for x in lineup:
+            if x["locked"]:
                 continue
-            if has_played(sid):
-                locked += 1
-                continue
-            cur = enrich(sid)
-            if not cur:
-                continue
-            elig = SLOT_ELIGIBILITY.get(slot, [slot])
-            floor = cur["pts"] + MIN_GAIN
-            bench_ups = sorted([p for p in bench if p["position"] in elig and p["pts"] > floor], key=lambda x: -x["pts"])[:2]
-            fa_ups = [p for p in fas if p["position"] in elig and p["pts"] > floor][:2]
-            if bench_ups or fa_ups:
-                upgrades.append({"slot": slot, "current_starter": cur, "bench_upgrades": bench_ups, "fa_upgrades": fa_ups})
+            cur, opt = x["current"], x["optimal"]
+            elig = SLOT_ELIGIBILITY.get(x["slot"], [x["slot"]])
+            base_pts = max((cur or {}).get("pts", 0), (opt or {}).get("pts", 0))
+            floor = base_pts + MIN_GAIN
+            roster_up = [opt] if opt and (cur is None or opt["id"] != cur["id"]) else []
+            # An independent bench<->starter swap must clear MIN_GAIN; coupled slot moves always show
+            if roster_up and cur and opt["id"] not in moved_ids and cur["id"] not in moved_ids \
+                    and (opt["pts"] - cur["pts"]) < MIN_GAIN:
+                roster_up = []
+                base_pts = cur["pts"]; floor = base_pts + MIN_GAIN
+            fa_ups = [f for f in fas if f["position"] in elig and f["pts"] > floor][:2]
+            zero_proj = cur is not None and (cur.get("pts") or 0) <= 0
+            if roster_up or fa_ups or (zero_proj and cur):
+                upgrades.append({
+                    "slot": x["slot"], "current_starter": cur, "zero_projection": zero_proj,
+                    "bench_upgrades": roster_up, "fa_upgrades": fa_ups,
+                })
 
         results.append({
-            "league": league["name"], "team": my_team_name, "upgrades": upgrades,
+            "league": league["name"], "team": my_team_name, "upgrades": upgrades, "moves": moves,
             "starter_count": len(starters_ordered), "locked_count": locked, "optimal": len(upgrades) == 0,
         })
 
@@ -1285,9 +1429,10 @@ async def get_bench_vs_fa(req: UserRequest):
         ss = league.get("scoring_settings") or {}
         proj_map = build_proj_map(proj_array, ss)
 
-        rosters, league_users = await asyncio.gather(
+        rosters, league_users, matchups = await asyncio.gather(
             get_rosters(league["league_id"]),
-            get_league_users(league["league_id"])
+            get_league_users(league["league_id"]),
+            get_matchups(league["league_id"], week)
         )
 
         my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
@@ -1298,7 +1443,8 @@ async def get_bench_vs_fa(req: UserRequest):
         my_user = user_lookup.get(user_id)
         my_team_name = (my_user or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
 
-        starter_ids = set(str(pid) for pid in (my_roster.get("starters") or []))
+        my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
+        starter_ids = set(str(pid) for pid in ((my_matchup or my_roster).get("starters") or []))
         taxi_ids = set(str(pid) for pid in (my_roster.get("taxi") or []))
 
         # All rostered players
@@ -1464,8 +1610,7 @@ async def get_week_review(req: WeekRequest):
         left_on_bench = round(optimal_pts - starter_pts, 2)
         efficiency = round(starter_pts / optimal_pts * 100, 1) if optimal_pts > 0 else 100.0
         grade = "A" if efficiency >= 97 else "B" if efficiency >= 90 else "C" if efficiency >= 80 else "D" if efficiency >= 70 else "F"
-        missed = [{"slot": s["slot"], "out": s["current"], "in": s["optimal"]} for s in hind
-                  if s["optimal"] and (s["current"] is None or s["current"]["id"] != s["optimal"]["id"])]
+        missed_moves, missed = lineup_moves(hind)
         cost_the_game = bool(won is False and opp_pts is not None and optimal_pts > opp_pts)
 
         # ── Under / over achievers among starters ──
@@ -1492,8 +1637,7 @@ async def get_week_review(req: WeekRequest):
             nxt_pool.append({**p, "pts": next_proj_map.get(p["id"], 0), "is_starter": p["id"] in nxt_set,
                              "on_bye": bool(bye and int(bye) == next_week)})
         nxt = compute_lineup(starter_slots, nxt_starters, nxt_pool, never_played, key="pts")
-        next_swaps = [{"slot": s["slot"], "out": s["current"], "in": s["optimal"]} for s in nxt
-                      if s["optimal"] and (s["current"] is None or s["current"]["id"] != s["optimal"]["id"])]
+        next_moves, next_swaps = lineup_moves(nxt)
         next_cur = round(sum((s["current"] or {}).get("pts", 0) for s in nxt), 1)
         next_opt = round(sum((s["optimal"] or {}).get("pts", 0) for s in nxt), 1)
         next_flags = [p for p in nxt_pool if p["is_starter"] and (p["on_bye"] or
@@ -1506,8 +1650,8 @@ async def get_week_review(req: WeekRequest):
             "won": won, "my_pts": my_pts, "opp_pts": opp_pts,
             "optimal_pts": optimal_pts, "starter_pts": starter_pts, "left_on_bench": left_on_bench,
             "efficiency": efficiency, "grade": grade, "cost_the_game": cost_the_game,
-            "missed_swaps": missed, "underachievers": under, "overachievers": over[:3],
-            "next_week": next_week, "next_swaps": next_swaps, "next_current_pts": next_cur,
+            "missed_swaps": missed, "missed_moves": missed_moves, "underachievers": under, "overachievers": over[:3],
+            "next_week": next_week, "next_swaps": next_swaps, "next_moves": next_moves, "next_current_pts": next_cur,
             "next_optimal_pts": next_opt, "next_flags": next_flags, "still_starting_under": still_starting_under,
         })
 

@@ -968,160 +968,557 @@ async def get_upgrade_recommendations(req: UserRequest):
 
     return {"week": week, "results": results}
 
+# ── LEAGUE EVALUATION (shared by Overview + Tier Records) ─────────────────────
+
+def _tier_of(c):
+    if c > 4.0: return "Juggernaut", "#00e5a0", "👑"
+    if c > 3.0: return "Contender", "#5c9eff", "🏆"
+    if c > 2.0: return "Fringe", "#ffb347", "⚡"
+    return "Rebuild", "#ff5c5c", "🔨"
+
+
+def _evaluate_league(league, my_roster, rosters, traded_picks, players_db, proj_map, season, current_week):
+    """Scores one league for the user. Returns a dict with both the blended composite
+    (record included, used by Overview) and a roster-only composite (used by Tier Records)."""
+    num_rounds = league.get("settings", {}).get("draft_rounds", 4)
+    playoff_spots = league.get("settings", {}).get("playoff_teams", 6)
+    playoff_week_start = league.get("settings", {}).get("playoff_week_start", 15)
+    regular_season_weeks = max(1, playoff_week_start - 1)
+
+    st = my_roster.get("settings") or {}
+    wins, losses, ties = st.get("wins", 0), st.get("losses", 0), st.get("ties", 0)
+    games_played = wins + losses + ties
+    win_pct = (wins + 0.5 * ties) / games_played if games_played > 0 else 0
+    fpts = st.get("fpts", 0) + st.get("fpts_decimal", 0) / 100.0
+    fpa = st.get("fpts_against", 0) + st.get("fpts_against_decimal", 0) / 100.0
+
+    def rk(r):
+        rs = r.get("settings") or {}
+        return (-rs.get("wins", 0), -(rs.get("fpts", 0) + rs.get("fpts_decimal", 0) / 100.0))
+    sorted_rosters = sorted(rosters, key=rk)
+    rank = next((i + 1 for i, r in enumerate(sorted_rosters) if r["roster_id"] == my_roster["roster_id"]), len(rosters))
+    rank_pct = rank / len(rosters)
+    in_playoffs = rank <= playoff_spots
+    line_roster = sorted_rosters[playoff_spots - 1] if len(sorted_rosters) >= playoff_spots else sorted_rosters[-1]
+    playoff_line_wins = (line_roster.get("settings") or {}).get("wins", 0)
+    total_games_played = sum((r.get("settings") or {}).get("wins", 0) + (r.get("settings") or {}).get("losses", 0) for r in rosters)
+    season_started = total_games_played > 0 or current_week > 1
+
+    starter_ids = set(str(pid) for pid in (my_roster.get("starters") or []))
+    taxi_ids = set(str(pid) for pid in (my_roster.get("taxi") or []))
+    my_starters = [{"id": str(pid), "position": (players_db.get(str(pid)) or {}).get("position", ""),
+                    "age": (players_db.get(str(pid)) or {}).get("age"), "pts": proj_map.get(str(pid), 0)}
+                   for pid in (my_roster.get("players") or []) if str(pid) in starter_ids]
+    my_bench = [{"pts": proj_map.get(str(pid), 0)} for pid in (my_roster.get("players") or [])
+                if str(pid) not in starter_ids and str(pid) not in taxi_ids]
+
+    league_avg = sum(sum(proj_map.get(str(pid), 0) for pid in (r.get("starters") or [])) for r in rosters) / len(rosters) if rosters else 0
+    my_starter_pts = sum(p["pts"] for p in my_starters)
+    pts_vs_avg = my_starter_pts / league_avg if league_avg > 0 else 1
+    roster_score = 5 if pts_vs_avg >= 1.15 else 4 if pts_vs_avg >= 1.05 else 3 if pts_vs_avg >= 0.95 else 2 if pts_vs_avg >= 0.85 else 1
+
+    starter_ages = [p["age"] for p in my_starters if p.get("age")]
+    avg_age = sum(starter_ages) / len(starter_ages) if starter_ages else 26
+    age_score = 5 if 25 <= avg_age <= 28 else 4 if avg_age <= 30 else 3 if avg_age >= 23 else 2
+
+    next_season = str(int(season) + 1)
+    picks_next = [p for p in traded_picks if p.get("season") == next_season]
+    t_map = {f"{p['round']}-{p['roster_id']}": p["owner_id"] for p in picks_next}
+    baseline_cap = sum(round_weight(r) for r in range(1, num_rounds + 1))
+    my_cap, missing_rounds = 0, []
+    for rnd in range(1, num_rounds + 1):
+        owned_count = sum(1 for r in rosters if t_map.get(f"{rnd}-{r['roster_id']}", r["roster_id"]) == my_roster["roster_id"])
+        if t_map.get(f"{rnd}-{my_roster['roster_id']}", my_roster["roster_id"]) != my_roster["roster_id"]:
+            missing_rounds.append(rnd)
+        my_cap += owned_count * round_weight(rnd)
+    cap_ratio = my_cap / baseline_cap if baseline_cap > 0 else 1
+    draft_score = 5 if cap_ratio >= 1.8 else 4 if cap_ratio >= 1.4 else 3 if cap_ratio >= 0.9 else 2 if cap_ratio >= 0.5 else 1
+    if 1 in missing_rounds:
+        draft_score = min(draft_score, 2)
+    if 1 in missing_rounds and 2 in missing_rounds:
+        draft_score = 1
+
+    depth_count = sum(1 for p in my_bench if p["pts"] >= 5)
+    depth_score = 5 if depth_count >= 6 else 4 if depth_count >= 4 else 3 if depth_count >= 2 else 2 if depth_count >= 1 else 1
+
+    record_score = 3
+    if season_started and games_played > 0:
+        wp_score = 5 if win_pct >= 0.70 else 4 if win_pct >= 0.55 else 3 if win_pct >= 0.45 else 2 if win_pct >= 0.30 else 1
+        rank_score = 5 if rank_pct <= 0.20 else 4 if rank_pct <= 0.40 else 3 if rank_pct <= 0.60 else 2 if rank_pct <= 0.80 else 1
+        sp = games_played / regular_season_weeks
+        record_score = max(1, min(5, round(wp_score * (1 - sp * 0.4) + rank_score * (sp * 0.4 + 0.3))))
+
+    roster_composite = roster_score * 0.75 + draft_score * 0.15 + age_score * 0.05 + depth_score * 0.05
+    if season_started and games_played > 0:
+        sp = min(games_played / regular_season_weeks, 1)
+        rec_w = 0.20 * sp
+        composite = roster_score * (0.75 - rec_w * 0.5) + record_score * rec_w + draft_score * (0.15 - rec_w * 0.3) + age_score * 0.05 + depth_score * 0.05
+    else:
+        composite = roster_composite
+
+    tier, tier_color, tier_icon = _tier_of(composite)
+    roster_tier, roster_tier_color, roster_tier_icon = _tier_of(roster_composite)
+
+    if composite > 4.0 or (composite > 3.0 and record_score >= 4):
+        strategy, strat_color, strat_icon = "Win Now", "#00e5a0", "🔥"
+        strat_actions = ["Trade depth and picks for proven starters", "Target aging veterans who want to win now", "Prioritize win-now FAs over upside fliers", "Don't hoard picks — use them as currency"]
+    elif composite > 3.0 and record_score < 3:
+        strategy, strat_color, strat_icon = "Sell High", "#5c9eff", "📈"
+        strat_actions = ["Your roster is stronger than your record — trade from hidden strength", "Other teams undervalue you right now — capitalize", "Sell players at peak value before the market corrects", "Look to acquire assets from teams overrating their hot start"]
+    elif composite <= 2.0:
+        strategy, strat_color, strat_icon = "Full Rebuild", "#ff5c5c", "🔨"
+        strat_actions = ["Sell aging veterans (28+) for picks or young players", "Acquire as many first round picks as possible", "Target youth with high upside on waivers", "Don't trade future picks for win-now pieces"]
+    elif composite > 2.0 and record_score >= 4:
+        strategy, strat_color, strat_icon = "Trust the Process", "#ff8c42", "⏳"
+        strat_actions = ["Your record is outpacing your roster — be cautious", "Don't overpay to win now on a middling roster", "Sell high on players performing above projection", "Build depth while momentum is with you"]
+    else:
+        strategy, strat_color, strat_icon = "Patience", "#ffb347", "🎯"
+        strat_actions = ["Identify your 1-2 weakest positions and target specific upgrades", "Avoid trading multiple picks for one player", "Stay active on waivers — consistency beats big swings", "Monitor contenders for buy-low opportunities after losses"]
+
+    return {
+        "wins": wins, "losses": losses, "ties": ties, "games_played": games_played, "win_pct": round(win_pct, 3),
+        "fpts": round(fpts, 2), "fpa": round(fpa, 2),
+        "rank": rank, "total_teams": len(rosters), "in_playoffs": in_playoffs, "playoff_spots": playoff_spots,
+        "playoff_line_wins": playoff_line_wins, "regular_season_weeks": regular_season_weeks,
+        "season_started": season_started,
+        "scores": {"Roster": roster_score, "Draft": draft_score, "Age": age_score, "Depth": depth_score, "Record": record_score},
+        "composite": round(composite, 2), "tier": tier, "tier_color": tier_color, "tier_icon": tier_icon,
+        "roster_composite": round(roster_composite, 2), "roster_tier": roster_tier,
+        "roster_tier_color": roster_tier_color, "roster_tier_icon": roster_tier_icon,
+        "strategy": strategy, "strat_color": strat_color, "strat_icon": strat_icon, "strat_actions": strat_actions,
+        "avg_age": round(avg_age, 1), "starter_pts": round(my_starter_pts, 1), "pts_vs_avg": round(pts_vs_avg, 3),
+        "missing_rounds": missing_rounds, "cap_ratio": round(cap_ratio, 2),
+    }
+
+
+async def _evaluate_all(req_username, week_override=None):
+    """Fetches + evaluates every league. Returns (user, season, current_week, [(league, my_team_name, eval)])."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req_username)
+    user_id = user["user_id"]
+    week = week_override or current_week
+    proj_array = await get_projections(season, week)
+    out = []
+    for league in leagues:
+        proj_map = build_proj_map(proj_array, league.get("scoring_settings") or {})
+        rosters, league_users, traded_picks = await asyncio.gather(
+            get_rosters(league["league_id"]), get_league_users(league["league_id"]), get_traded_picks(league["league_id"])
+        )
+        my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my_roster:
+            continue
+        my_user = next((u for u in league_users if u["user_id"] == user_id), None)
+        my_team_name = (my_user or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
+        ev = _evaluate_league(league, my_roster, rosters, traded_picks, players_db, proj_map, season, current_week)
+        out.append((league, my_team_name, ev))
+    return user, season, current_week, out
+
+
 # ── OVERVIEW (Contender + Strategy) ───────────────────────────────────────────
 
 @router.post("/analysis/overview")
 async def get_overview(req: UserRequest):
+    user, season, current_week, evals = await _evaluate_all(req.username, req.week)
+    results = []
+    for league, my_team_name, ev in evals:
+        results.append({
+            "league": league["name"], "team": my_team_name,
+            "record": f"{ev['wins']}-{ev['losses']}" + (f"-{ev['ties']}" if ev["ties"] else ""),
+            "rank": ev["rank"], "total_teams": ev["total_teams"], "in_playoffs": ev["in_playoffs"],
+            "composite": ev["composite"], "tier": ev["tier"], "tier_color": ev["tier_color"], "tier_icon": ev["tier_icon"],
+            "strategy": ev["strategy"], "strat_color": ev["strat_color"], "strat_icon": ev["strat_icon"],
+            "strat_actions": ev["strat_actions"], "scores": ev["scores"],
+            "avg_age": ev["avg_age"], "starter_pts": ev["starter_pts"], "pts_vs_avg": ev["pts_vs_avg"],
+        })
+    results.sort(key=lambda r: {"Win Now": 0, "Sell High": 1, "Patience": 2, "Trust the Process": 3, "Full Rebuild": 4}.get(r["strategy"], 9))
+    return {"results": results}
+
+
+# ── TIER RECORDS (are my tiers earning their record?) ─────────────────────────
+
+PYTH_EXP = 2.37   # Pythagorean exponent tuned for fantasy scoring variance
+
+def _tier_record_verdict(ev):
+    """
+    Compares the ROSTER tier (record excluded) against the actual record and
+    returns a status + forward recommendation.
+    """
+    tier = ev["roster_tier"]
+    gp, wins, ties = ev["games_played"], ev["wins"], ev["ties"]
+    wp = ev["win_pct"]
+    rsw = ev["regular_season_weeks"]
+    games_left = max(0, rsw - gp)
+    progress = gp / rsw if rsw else 0
+
+    exp_wp = None; exp_wins = None; luck = None
+    if ev["fpts"] > 0 and ev["fpa"] > 0 and gp > 0:
+        exp_wp = ev["fpts"] ** PYTH_EXP / (ev["fpts"] ** PYTH_EXP + ev["fpa"] ** PYTH_EXP)
+        exp_wins = round(exp_wp * gp, 1)
+        luck = round(wins + 0.5 * ties - exp_wins, 1)
+
+    games_back = 0 if ev["in_playoffs"] else max(0, ev["playoff_line_wins"] - wins)
+    reachable = games_back == 0 or games_back < games_left   # tied on games needs a tiebreak; equal = need a miracle
+
+    A = {}  # status -> (color, headline, actions)
+    A["PRESEASON"]    = ("#8b91a8", "No games played yet — nothing to judge.", [])
+    A["ON TRACK"]     = ("#00e5a0", "Roster tier and record agree. Stay the course.",
+                         ["Keep the lineup tight — no reason to churn", "Buy low from contenders coming off 2–3 straight losses", "Don't overpay for marginal upgrades"])
+    A["HOLD — UNLUCKY"] = ("#ffb347", "Elite roster, losing record, but points say you should be winning. It's early — do not blow it up.",
+                         ["Hold every core piece; the record will regress toward your points", "Use the perception dip: buy one more starter from a panicking rival", "Audit lineup decisions — was it luck or bench points?"])
+    A["RETOOL"]       = ("#ff8c42", "Roster says contender, record says no, and it's no longer early. Move 1–2 pieces while their value holds — keep the core.",
+                         ["Sell your oldest high-value starter (28+) for a younger starter + pick", "Fix the single weakest lineup slot via trade, not waivers", "Set a hard deadline: if still under .500 in 2 weeks, go to fire sale"])
+    A["LAST CALL"]    = ("#ff5c5c", "Late season, under .500, playoffs still mathematically reachable. Decide this week: all-in or sell.",
+                         ["Within 1 game of the line: buy one difference-maker for picks", "More than 1 game back: start the fire sale now, before other sellers flood the market", "Stop spending FAAB on rentals"])
+    A["FIRE SALE"]    = ("#ff5c5c", "Strong roster, losing record, and the playoffs are out of reach. Convert value into futures before it decays.",
+                         ["Sell every starter 27+ with real trade value for 1st-round picks or players ≤24", "Move RBs first — RB value decays fastest", "Target the next-year 1sts of teams sitting 2nd–4th: they think they're contending", "Don't spend FAAB on win-now pickups; stash youth"])
+    A["OVERACHIEVING"]= ("#5c9eff", "Middling roster with a winning record. Enjoy it, but sell into it — don't buy.",
+                         ["Sell any player scoring well above projection", "Don't trade picks to 'push' — the roster doesn't support it", "Bank the wins; use them as leverage in trade talks"])
+    A["PIVOT TO REBUILD"] = ("#ff5c5c", "Middling roster, losing record, playoffs gone. This is the moment to commit to a rebuild.",
+                         ["Sell all vets 27+ for picks", "Accumulate next-year 1sts and 2nds", "Prioritize youth on waivers over any win-now pickup"])
+    A["ON SCHEDULE"]  = ("#8b91a8", "Rebuilding and losing — that's the plan. Keep accumulating.",
+                         ["Keep selling vets on hot streaks", "Target rookies and 2nd-year players on waivers", "Don't get tempted into win-now trades"])
+    A["AHEAD OF SCHEDULE"] = ("#5c9eff", "Rebuilding roster with a winning record. Don't abandon the plan for a hot start — sell into it.",
+                         ["Sell the vets driving the wins while their value is inflated", "Don't trade future picks to chase a fluke season", "If still winning at midseason, re-evaluate — but stay disciplined"])
+
+    if gp == 0:
+        status = "PRESEASON"
+    elif tier in ("Juggernaut", "Contender"):
+        if wp >= 0.5:
+            status = "ON TRACK"
+        elif not reachable:
+            status = "FIRE SALE"
+        elif progress < 0.4 and luck is not None and luck <= -0.75:
+            status = "HOLD — UNLUCKY"
+        elif progress < 0.6:
+            status = "RETOOL"
+        else:
+            status = "LAST CALL"
+    elif tier == "Fringe":
+        if wp >= 0.5:
+            status = "OVERACHIEVING"
+        elif not reachable:
+            status = "PIVOT TO REBUILD"
+        else:
+            status = "RETOOL"
+    else:  # Rebuild
+        status = "ON SCHEDULE" if wp < 0.5 else "AHEAD OF SCHEDULE"
+
+    color, headline, actions = A[status]
+    flagged = status in ("FIRE SALE", "RETOOL", "LAST CALL", "HOLD — UNLUCKY", "PIVOT TO REBUILD")
+    return {
+        "status": status, "status_color": color, "headline": headline, "actions": actions, "flagged": flagged,
+        "exp_win_pct": round(exp_wp, 3) if exp_wp is not None else None,
+        "exp_wins": exp_wins, "luck": luck,
+        "games_left": games_left, "games_back": games_back, "reachable": reachable, "progress": round(progress, 2),
+    }
+
+
+@router.post("/analysis/tier-records")
+async def get_tier_records(req: UserRequest):
+    user, season, current_week, evals = await _evaluate_all(req.username, req.week)
+    results = []
+    for league, my_team_name, ev in evals:
+        v = _tier_record_verdict(ev)
+        results.append({
+            "league": league["name"], "team": my_team_name,
+            "record": f"{ev['wins']}-{ev['losses']}" + (f"-{ev['ties']}" if ev["ties"] else ""),
+            "wins": ev["wins"], "losses": ev["losses"], "ties": ev["ties"], "games_played": ev["games_played"], "win_pct": ev["win_pct"],
+            "fpts": ev["fpts"], "fpa": ev["fpa"],
+            "rank": ev["rank"], "total_teams": ev["total_teams"], "in_playoffs": ev["in_playoffs"], "playoff_spots": ev["playoff_spots"],
+            "tier": ev["roster_tier"], "tier_color": ev["roster_tier_color"], "tier_icon": ev["roster_tier_icon"],
+            "roster_composite": ev["roster_composite"], "blended_tier": ev["tier"],
+            "scores": ev["scores"], "avg_age": ev["avg_age"], "pts_vs_avg": ev["pts_vs_avg"],
+            **v,
+        })
+
+    tier_order = {"Juggernaut": 0, "Contender": 1, "Fringe": 2, "Rebuild": 3}
+    results.sort(key=lambda r: (tier_order.get(r["tier"], 9), r["win_pct"], -r["roster_composite"]))
+
+    by_tier = {}
+    for r in results:
+        t = by_tier.setdefault(r["tier"], {"tier": r["tier"], "color": r["tier_color"], "icon": r["tier_icon"],
+                                          "leagues": 0, "wins": 0, "losses": 0, "ties": 0, "flagged": 0, "under_500": 0})
+        t["leagues"] += 1; t["wins"] += r["wins"]; t["losses"] += r["losses"]; t["ties"] += r["ties"]
+        t["flagged"] += 1 if r["flagged"] else 0
+        t["under_500"] += 1 if r["games_played"] > 0 and r["win_pct"] < 0.5 else 0
+    for t in by_tier.values():
+        g = t["wins"] + t["losses"] + t["ties"]
+        t["win_pct"] = round((t["wins"] + 0.5 * t["ties"]) / g, 3) if g else None
+
+    summary = {
+        "leagues": len(results),
+        "flagged": sum(1 for r in results if r["flagged"]),
+        "fire_sale": sum(1 for r in results if r["status"] in ("FIRE SALE", "PIVOT TO REBUILD")),
+        "on_track": sum(1 for r in results if r["status"] in ("ON TRACK", "ON SCHEDULE")),
+        "overachieving": sum(1 for r in results if r["status"] in ("OVERACHIEVING", "AHEAD OF SCHEDULE")),
+        "by_tier": [by_tier[t] for t in ("Juggernaut", "Contender", "Fringe", "Rebuild") if t in by_tier],
+    }
+    return {"week": current_week, "summary": summary, "results": results}
+
+
+# ── TEAM DEEP DIVE (one league, one team, everything) ─────────────────────────
+
+def _grade(ratio):
+    return "A" if ratio >= 1.15 else "B" if ratio >= 1.05 else "C" if ratio >= 0.95 else "D" if ratio >= 0.85 else "F"
+
+def _win_prob(diff):
+    return round(1 / (1 + 2.71828 ** (-diff / 8)) * 100)
+
+
+@router.post("/analysis/team-deep-dive")
+async def get_team_deep_dive(req: UserLeagueRequest):
     user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
     user_id = user["user_id"]
     week = req.week or current_week
+    q = (req.league_name or "").strip().lower()
+    if not q:
+        raise HTTPException(status_code=400, detail="League name is required for a deep dive")
 
-    proj_array = await get_projections(season, week)
-    results = []
+    league = next((l for l in leagues if l["name"].strip().lower() == q), None) \
+          or next((l for l in leagues if q in l["name"].lower()), None)
+    if not league:
+        raise HTTPException(status_code=404, detail=f'No league matching "{req.league_name}". Your leagues: ' + ", ".join(l["name"] for l in leagues))
 
-    for league in leagues:
-        ss = league.get("scoring_settings") or {}
-        proj_map = build_proj_map(proj_array, ss)
-        roster_positions = league.get("roster_positions", [])
-        num_rounds = league.get("settings", {}).get("draft_rounds", 4)
-        playoff_spots = league.get("settings", {}).get("playoff_teams", 6)
-        playoff_week_start = league.get("settings", {}).get("playoff_week_start", 15)
-        regular_season_weeks = playoff_week_start - 1
+    ss = league.get("scoring_settings") or {}
+    roster_positions = league.get("roster_positions", [])
+    starter_slots = [x for x in roster_positions if x not in ("BN", "IR", "TAXI")]
+    playoff_week_start = league.get("settings", {}).get("playoff_week_start", 15)
+    reg_end = playoff_week_start - 1
+    num_rounds = league.get("settings", {}).get("draft_rounds", 4)
+    is_dynasty = league.get("settings", {}).get("type", 0) == 2
+    scoring_type = "PPR" if ss.get("rec", 0) >= 1 else "Half PPR" if ss.get("rec", 0) >= 0.5 else "Standard"
+    weeks_done = max(0, min(week, current_week) - 1)
 
-        rosters, league_users, traded_picks = await asyncio.gather(
-            get_rosters(league["league_id"]),
-            get_league_users(league["league_id"]),
-            get_traded_picks(league["league_id"])
-        )
+    # ── fetch everything for this league in parallel ──
+    past_weeks = list(range(1, weeks_done + 1))
+    future_weeks = list(range(week, reg_end + 1))
+    fetches = [get_rosters(league["league_id"]), get_league_users(league["league_id"]), get_traded_picks(league["league_id"]),
+               get_projections(season, week), get_stats(season, week)]
+    fetches += [get_matchups(league["league_id"], w) for w in past_weeks + future_weeks]
+    fetches += [get_stats(season, w) for w in past_weeks]
+    res = await asyncio.gather(*fetches)
+    rosters, league_users, traded_picks, proj_array, stats_array = res[:5]
+    mu = res[5:5 + len(past_weeks) + len(future_weeks)]
+    past_matchups = dict(zip(past_weeks, mu[:len(past_weeks)]))
+    future_matchups = dict(zip(future_weeks, mu[len(past_weeks):]))
+    past_stats = dict(zip(past_weeks, res[5 + len(mu):]))
 
-        my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
-        if not my_roster:
+    my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
+    if not my_roster:
+        raise HTTPException(status_code=404, detail=f"You don't have a team in {league['name']}")
+    user_lookup = {u["user_id"]: u for u in league_users}
+    roster_lookup = {r["roster_id"]: r for r in rosters}
+    def team_name_of(roster):
+        u = user_lookup.get((roster or {}).get("owner_id"))
+        return (u or {}).get("metadata", {}).get("team_name") or (u or {}).get("display_name") or f"Roster {(roster or {}).get('roster_id')}"
+    my_team_name = team_name_of(my_roster)
+
+    proj_map = build_proj_map(proj_array, ss)
+    stats_map = build_stats_map(stats_array)
+    has_played = lambda pid: stats_map.get(str(pid), {}).get("gp", 0) >= 1
+
+    # ── evaluation + verdict (same engine as Overview / Tier Records) ──
+    ev = _evaluate_league(league, my_roster, rosters, traded_picks, players_db, proj_map, season, current_week)
+    verdict = _tier_record_verdict(ev)
+
+    # ── YTD per player (league scoring) ──
+    ytd = {}
+    for w, arr in past_stats.items():
+        for pid, st in build_stats_map(arr).items():
+            acc = ytd.setdefault(pid, {"pts": 0.0, "gp": 0})
+            acc["pts"] += sum(ss.get(k, 0) * v for k, v in st.items() if isinstance(v, (int, float)))
+            acc["gp"] += 1 if st.get("gp", 0) >= 1 else 0
+
+    # ── roster ──
+    my_matchup = next((m for m in (future_matchups.get(week) or past_matchups.get(week) or []) if m["roster_id"] == my_roster["roster_id"]), None)
+    starters_ordered = [str(x) for x in ((my_matchup or my_roster).get("starters") or [])]
+    starter_set = set(starters_ordered)
+    taxi_ids = set(str(x) for x in (my_roster.get("taxi") or []))
+    reserve_ids = set(str(x) for x in (my_roster.get("reserve") or []))
+    slot_of = {}
+    for i, pid in enumerate(starters_ordered):
+        if pid and pid != "0" and i < len(starter_slots):
+            slot_of[pid] = starter_slots[i]
+
+    roster = []
+    for pid in (my_roster.get("players") or []):
+        pid = str(pid)
+        p = players_db.get(pid)
+        if not p:
             continue
+        y = ytd.get(pid, {"pts": 0.0, "gp": 0})
+        roster.append({
+            "id": pid, "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team") or "FA",
+            "age": p.get("age"), "years_exp": p.get("years_exp"), "injury_status": p.get("injury_status"),
+            "bye_week": p.get("bye_week"), "proj": proj_map.get(pid, 0),
+            "ytd_pts": round(y["pts"], 1), "ytd_gp": y["gp"], "ytd_avg": round(y["pts"] / y["gp"], 1) if y["gp"] else 0,
+            "role": "taxi" if pid in taxi_ids else "ir" if pid in reserve_ids else "starter" if pid in starter_set else "bench",
+            "slot": slot_of.get(pid), "has_played": has_played(pid),
+        })
+    roster.sort(key=lambda x: (-(x["role"] == "starter"), x["position"], -x["proj"]))
 
-        user_lookup = {u["user_id"]: u for u in league_users}
-        my_user = user_lookup.get(user_id)
-        my_team_name = (my_user or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
-
-        wins = my_roster.get("settings", {}).get("wins", 0)
-        losses = my_roster.get("settings", {}).get("losses", 0)
-        ties = my_roster.get("settings", {}).get("ties", 0)
-        games_played = wins + losses + ties
-        win_pct = wins / games_played if games_played > 0 else 0
-
-        sorted_rosters = sorted(rosters, key=lambda r: (-(r.get("settings") or {}).get("wins", 0), -(r.get("settings") or {}).get("fpts", 0)))
-        rank = next((i + 1 for i, r in enumerate(sorted_rosters) if r["roster_id"] == my_roster["roster_id"]), len(rosters))
-        rank_pct = rank / len(rosters)
-        in_playoffs = rank <= playoff_spots
-        total_games_played = sum((r.get("settings") or {}).get("wins", 0) + (r.get("settings") or {}).get("losses", 0) for r in rosters)
-        season_started = total_games_played > 0 or current_week > 1
-
-        # Roster score
-        starter_ids = set(str(pid) for pid in (my_roster.get("starters") or []))
-        taxi_ids = set(str(pid) for pid in (my_roster.get("taxi") or []))
-        my_starters = [{"id": str(pid), "position": (players_db.get(str(pid)) or {}).get("position", ""), "age": (players_db.get(str(pid)) or {}).get("age"), "pts": proj_map.get(str(pid), 0)} for pid in (my_roster.get("players") or []) if str(pid) in starter_ids]
-        my_bench = [{"pts": proj_map.get(str(pid), 0)} for pid in (my_roster.get("players") or []) if str(pid) not in starter_ids and str(pid) not in taxi_ids]
-
-        league_avg = sum(sum(proj_map.get(str(pid), 0) for pid in (r.get("starters") or [])) for r in rosters) / len(rosters) if rosters else 0
-        my_starter_pts = sum(p["pts"] for p in my_starters)
-        pts_vs_avg = my_starter_pts / league_avg if league_avg > 0 else 1
-        roster_score = 5 if pts_vs_avg >= 1.15 else 4 if pts_vs_avg >= 1.05 else 3 if pts_vs_avg >= 0.95 else 2 if pts_vs_avg >= 0.85 else 1
-
-        # Age score
-        starter_ages = [p["age"] for p in my_starters if p.get("age")]
-        avg_age = sum(starter_ages) / len(starter_ages) if starter_ages else 26
-        age_score = 5 if 25 <= avg_age <= 28 else 4 if avg_age <= 30 else 3 if avg_age >= 23 else 2
-
-        # Draft capital
-        next_season = str(int(season) + 1)
-        picks_next = [p for p in traded_picks if p.get("season") == next_season]
-        t_map = {f"{p['round']}-{p['roster_id']}": p["owner_id"] for p in picks_next}
-        baseline_cap = sum(round_weight(r) for r in range(1, num_rounds + 1))
-        my_cap = 0
-        missing_rounds = []
-        for rnd in range(1, num_rounds + 1):
-            owned_count = sum(1 for r in rosters if t_map.get(f"{rnd}-{r['roster_id']}", r["roster_id"]) == my_roster["roster_id"])
-            my_key = f"{rnd}-{my_roster['roster_id']}"
-            if t_map.get(my_key, my_roster["roster_id"]) != my_roster["roster_id"]:
-                missing_rounds.append(rnd)
-            my_cap += owned_count * round_weight(rnd)
-        cap_ratio = my_cap / baseline_cap if baseline_cap > 0 else 1
-        draft_score = 5 if cap_ratio >= 1.8 else 4 if cap_ratio >= 1.4 else 3 if cap_ratio >= 0.9 else 2 if cap_ratio >= 0.5 else 1
-        if 1 in missing_rounds:
-            draft_score = min(draft_score, 2)
-        if 1 in missing_rounds and 2 in missing_rounds:
-            draft_score = 1
-
-        # Depth score
-        depth_count = sum(1 for p in my_bench if p["pts"] >= 5)
-        depth_score = 5 if depth_count >= 6 else 4 if depth_count >= 4 else 3 if depth_count >= 2 else 2 if depth_count >= 1 else 1
-
-        # Record score
-        record_score = 3
-        if season_started and games_played > 0:
-            wp_score = 5 if win_pct >= 0.70 else 4 if win_pct >= 0.55 else 3 if win_pct >= 0.45 else 2 if win_pct >= 0.30 else 1
-            rank_score = 5 if rank_pct <= 0.20 else 4 if rank_pct <= 0.40 else 3 if rank_pct <= 0.60 else 2 if rank_pct <= 0.80 else 1
-            sp = games_played / regular_season_weeks
-            record_score = max(1, min(5, round(wp_score * (1 - sp * 0.4) + rank_score * (sp * 0.4 + 0.3))))
-
-        # Composite
-        if season_started and games_played > 0:
-            sp = min(games_played / regular_season_weeks, 1)
-            rec_w = 0.20 * sp
-            composite = roster_score * (0.75 - rec_w * 0.5) + record_score * rec_w + draft_score * (0.15 - rec_w * 0.3) + age_score * 0.05 + depth_score * 0.05
-        else:
-            composite = roster_score * 0.75 + draft_score * 0.15 + age_score * 0.05 + depth_score * 0.05
-
-        # Tier
-        if composite > 4.0:
-            tier, tier_color, tier_icon = "Juggernaut", "#00e5a0", "👑"
-        elif composite > 3.0:
-            tier, tier_color, tier_icon = "Contender", "#5c9eff", "🏆"
-        elif composite > 2.0:
-            tier, tier_color, tier_icon = "Fringe", "#ffb347", "⚡"
-        else:
-            tier, tier_color, tier_icon = "Rebuild", "#ff5c5c", "🔨"
-
-        # Strategy
-        if composite > 4.0 or (composite > 3.0 and record_score >= 4):
-            strategy, strat_color, strat_icon = "Win Now", "#00e5a0", "🔥"
-            strat_actions = ["Trade depth and picks for proven starters", "Target aging veterans who want to win now", "Prioritize win-now FAs over upside fliers", "Don't hoard picks — use them as currency"]
-        elif composite > 3.0 and record_score < 3:
-            strategy, strat_color, strat_icon = "Sell High", "#5c9eff", "📈"
-            strat_actions = ["Your roster is stronger than your record — trade from hidden strength", "Other teams undervalue you right now — capitalize", "Sell players at peak value before the market corrects", "Look to acquire assets from teams overrating their hot start"]
-        elif composite <= 2.0:
-            strategy, strat_color, strat_icon = "Full Rebuild", "#ff5c5c", "🔨"
-            strat_actions = ["Sell aging veterans (28+) for picks or young players", "Acquire as many first round picks as possible", "Target youth with high upside on waivers", "Don't trade future picks for win-now pieces"]
-        elif composite > 2.0 and record_score >= 4:
-            strategy, strat_color, strat_icon = "Trust the Process", "#ff8c42", "⏳"
-            strat_actions = ["Your record is outpacing your roster — be cautious", "Don't overpay to win now on a middling roster", "Sell high on players performing above projection", "Build depth while momentum is with you"]
-        else:
-            strategy, strat_color, strat_icon = "Patience", "#ffb347", "🎯"
-            strat_actions = ["Identify your 1-2 weakest positions and target specific upgrades", "Avoid trading multiple picks for one player", "Stay active on waivers — consistency beats big swings", "Monitor contenders for buy-low opportunities after losses"]
-
-        scores = {"Roster": roster_score, "Draft": draft_score, "Age": age_score, "Depth": depth_score, "Record": record_score}
-        results.append({
-            "league": league["name"],
-            "team": my_team_name,
-            "record": f"{wins}-{losses}" + (f"-{ties}" if ties else ""),
-            "rank": rank,
-            "total_teams": len(rosters),
-            "in_playoffs": in_playoffs,
-            "composite": round(composite, 2),
-            "tier": tier,
-            "tier_color": tier_color,
-            "tier_icon": tier_icon,
-            "strategy": strategy,
-            "strat_color": strat_color,
-            "strat_icon": strat_icon,
-            "strat_actions": strat_actions,
-            "scores": scores,
-            "avg_age": round(avg_age, 1),
-            "starter_pts": round(my_starter_pts, 1),
-            "pts_vs_avg": round(pts_vs_avg, 3),
+    # ── position groups vs league ──
+    POS = ["QB", "RB", "WR", "TE", "K", "DEF"]
+    lg_pos_avg = {}
+    for pos in POS:
+        vals = []
+        for r in rosters:
+            pts = [proj_map.get(str(x), 0) for x in (r.get("starters") or []) if (players_db.get(str(x)) or {}).get("position") == pos]
+            if pts:
+                vals.append(sum(pts) / len(pts))
+        lg_pos_avg[pos] = sum(vals) / len(vals) if vals else 0
+    position_groups = []
+    for pos in POS:
+        mine = [x for x in roster if x["position"] == pos and x["role"] != "taxi"]
+        if not mine and lg_pos_avg[pos] == 0:
+            continue
+        st = [x for x in mine if x["role"] == "starter"]
+        my_avg = sum(x["proj"] for x in st) / len(st) if st else 0
+        ratio = my_avg / lg_pos_avg[pos] if lg_pos_avg[pos] > 0 else (1 if st else 0)
+        dedicated = sum(1 for x in starter_slots if x == pos)
+        flex_el = sum(1 for x in starter_slots if x != pos and pos in SLOT_ELIGIBILITY.get(x, []))
+        startable_depth = sum(1 for x in mine if x["role"] == "bench" and x["proj"] >= lg_pos_avg[pos] * 0.8)
+        starter_quality = sum(1 for x in mine if x["role"] in ("starter", "bench") and lg_pos_avg[pos] > 0 and x["proj"] >= lg_pos_avg[pos] * 0.9)
+        position_groups.append({
+            "position": pos, "grade": _grade(ratio) if st else ("F" if dedicated else "—"),
+            "my_avg": round(my_avg, 1), "league_avg": round(lg_pos_avg[pos], 1), "ratio": round(ratio, 2),
+            "count": len(mine), "starters": len(st), "dedicated_slots": dedicated, "flex_slots": flex_el,
+            "startable_depth": startable_depth, "starter_quality": starter_quality,
+            "surplus": starter_quality > dedicated + 1,
+            "need": (ratio < 0.9 and dedicated > 0) or (dedicated > 0 and not st),
+            "players": mine,
         })
 
-    results.sort(key=lambda r: {"Win Now": 0, "Sell High": 1, "Patience": 2, "Trust the Process": 3, "Full Rebuild": 4}.get(r["strategy"], 9))
-    return {"results": results}
+    # ── this week's lineup ──
+    pool = [{"id": x["id"], "name": x["name"], "position": x["position"], "team": x["team"], "pts": x["proj"],
+             "injury_status": x["injury_status"], "is_starter": x["role"] == "starter"} for x in roster if x["role"] in ("starter", "bench")]
+    lineup = compute_lineup(starter_slots, starters_ordered, pool, has_played, key="pts")
+    moves, _ = lineup_moves(lineup)
+    cur_pts = round(sum((x["current"] or {}).get("pts", 0) for x in lineup), 1)
+    opt_pts = round(sum((x["optimal"] or {}).get("pts", 0) for x in lineup), 1)
+    zero_starters = [x for x in roster if x["role"] == "starter" and x["proj"] <= 0 and not x["has_played"]]
+    injured_starters = [x for x in roster if x["role"] == "starter" and (x["injury_status"] or "").lower() in ("out", "ir", "pup", "sus", "doubtful")]
+
+    # ── season log with hindsight efficiency ──
+    log = []
+    for w in past_weeks:
+        ms = past_matchups.get(w) or []
+        m = next((x for x in ms if x["roster_id"] == my_roster["roster_id"]), None)
+        if not m:
+            continue
+        opp = next((x for x in ms if x.get("matchup_id") == m.get("matchup_id") and x["roster_id"] != m["roster_id"]), None)
+        pp = m.get("players_points") or {}
+        wk_pool = [{"id": str(pid), "position": (players_db.get(str(pid)) or {}).get("position", "UNK"), "pts": pp.get(str(pid), 0)}
+                   for pid in (m.get("players") or [])]
+        st_ordered = [str(x) for x in (m.get("starters") or [])]
+        hind = compute_lineup(starter_slots, st_ordered, wk_pool, lambda pid: False, key="pts")
+        optimal = round(sum((x["optimal"] or {}).get("pts", 0) for x in hind), 2)
+        mine = round(m.get("points", 0) or 0, 2)
+        oppp = round(opp.get("points", 0) or 0, 2) if opp else None
+        if mine == 0 and (oppp or 0) == 0:
+            continue                       # week not scored (data missing) — don't count it
+        tied = oppp is not None and mine == oppp
+        won = None if (oppp is None or tied) else (mine > oppp)
+        log.append({
+            "week": w, "my_pts": mine, "opp_pts": oppp, "opp_name": team_name_of(roster_lookup.get((opp or {}).get("roster_id"))),
+            "won": won, "tied": tied, "optimal_pts": optimal,
+            "left_on_bench": round(max(0, optimal - mine), 2),
+            "efficiency": round(mine / optimal * 100, 1) if optimal > 0 else 100.0,
+            "cost_the_game": bool(won is False and oppp is not None and optimal > oppp),
+        })
+    total_left = round(sum(x["left_on_bench"] for x in log), 1)
+    games_cost = sum(1 for x in log if x["cost_the_game"])
+    avg_eff = round(sum(x["efficiency"] for x in log) / len(log), 1) if log else None
+
+    # ── remaining schedule ──
+    strength = {r["roster_id"]: sum(proj_map.get(str(x), 0) for x in (r.get("starters") or [])) for r in rosters}
+    my_strength = sum(proj_map.get(x, 0) for x in starters_ordered if x and x != "0") or strength.get(my_roster["roster_id"], 0)
+    schedule = []
+    for w in future_weeks:
+        ms = future_matchups.get(w) or []
+        m = next((x for x in ms if x["roster_id"] == my_roster["roster_id"]), None)
+        if not m:
+            continue
+        opp = next((x for x in ms if x.get("matchup_id") == m.get("matchup_id") and x["roster_id"] != m["roster_id"]), None)
+        if not opp:
+            continue
+        opp_r = roster_lookup.get(opp["roster_id"]) or {}
+        os_ = opp_r.get("settings") or {}
+        opp_str = strength.get(opp["roster_id"], 0)
+        schedule.append({
+            "week": w, "opp_name": team_name_of(opp_r), "opp_record": f"{os_.get('wins', 0)}-{os_.get('losses', 0)}",
+            "my_proj": round(my_strength, 1), "opp_proj": round(opp_str, 1),
+            "win_prob": _win_prob(my_strength - opp_str), "is_current": w == week,
+        })
+    exp_remaining_wins = round(sum(x["win_prob"] for x in schedule) / 100, 1)
+    proj_final_wins = round(ev["wins"] + exp_remaining_wins, 1)
+    proj_final_losses = round(ev["losses"] + len(schedule) - exp_remaining_wins, 1)
+    sched_strength = round(sum(x["opp_proj"] for x in schedule) / len(schedule), 1) if schedule else None
+    lg_avg_strength = round(sum(strength.values()) / len(strength), 1) if strength else None
+
+    # ── draft capital (next season) ──
+    next_season = str(int(season) + 1)
+    t_map = {f"{p['round']}-{p['roster_id']}": p["owner_id"] for p in traded_picks if p.get("season") == next_season}
+    picks = []
+    for rnd in range(1, num_rounds + 1):
+        for r in rosters:
+            owner = t_map.get(f"{rnd}-{r['roster_id']}", r["roster_id"])
+            if owner == my_roster["roster_id"]:
+                picks.append({"round": rnd, "original_owner": team_name_of(r), "own": r["roster_id"] == my_roster["roster_id"]})
+    traded_away = [{"round": rnd, "to": team_name_of(roster_lookup.get(t_map[f"{rnd}-{my_roster['roster_id']}"]))}
+                   for rnd in range(1, num_rounds + 1)
+                   if t_map.get(f"{rnd}-{my_roster['roster_id']}", my_roster["roster_id"]) != my_roster["roster_id"]]
+
+    # ── trade assets ──
+    def is_vet(x):
+        a = x.get("age") or 0
+        return a >= 26 if x["position"] == "RB" else a >= 27
+    sell_candidates = sorted(
+        [x for x in roster if x["role"] in ("starter", "bench") and is_vet(x) and x["proj"] >= lg_pos_avg.get(x["position"], 0) * 0.9 and x["proj"] > 0],
+        key=lambda x: -x["proj"])[:6]
+    young_core = sorted(
+        [x for x in roster if (x.get("age") or 99) <= 25 and x["proj"] >= lg_pos_avg.get(x["position"], 0) * 0.9 and x["proj"] > 0],
+        key=lambda x: -x["proj"])[:6]
+    needs = [g["position"] for g in position_groups if g["need"]]
+    surplus = [g["position"] for g in position_groups if g["surplus"]]
+
+    # ── deep-dive verdict text: reuse tier verdict + specifics ──
+    specifics = []
+    if verdict["status"] in ("FIRE SALE", "PIVOT TO REBUILD") and sell_candidates:
+        specifics.append("Sell first: " + ", ".join(f"{x['name']} ({x['position']}, {x['age']})" for x in sell_candidates[:3]))
+    if verdict["status"] in ("RETOOL", "LAST CALL") and needs:
+        specifics.append("Fix via trade: " + ", ".join(needs) + (f" — pay with {', '.join(surplus)} depth" if surplus else ""))
+    if verdict["status"] == "HOLD — UNLUCKY" and total_left >= 10:
+        specifics.append(f"{total_left} pts left on the bench this season — some of the 'bad luck' is lineup management")
+    if games_cost:
+        specifics.append(f"Lineup decisions cost {games_cost} game{'s' if games_cost != 1 else ''} this season")
+    if zero_starters:
+        specifics.append("Zero-point starters this week: " + ", ".join(x["name"] for x in zero_starters))
+    if traded_away and 1 in [t["round"] for t in traded_away]:
+        specifics.append(f"You do not own your {next_season} 1st — a full tank has less payoff")
+
+    return {
+        "league": {"name": league["name"], "id": league["league_id"], "format": f"{'Dynasty' if is_dynasty else 'Redraft'} · {scoring_type} · {len(rosters)} teams",
+                   "starter_slots": starter_slots, "playoff_spots": ev["playoff_spots"], "regular_season_weeks": reg_end},
+        "team": my_team_name, "week": week, "season": season,
+        "record": f"{ev['wins']}-{ev['losses']}" + (f"-{ev['ties']}" if ev["ties"] else ""), "win_pct": ev["win_pct"],
+        "rank": ev["rank"], "total_teams": ev["total_teams"], "in_playoffs": ev["in_playoffs"],
+        "fpts": ev["fpts"], "fpa": ev["fpa"], "avg_age": ev["avg_age"], "pts_vs_avg": ev["pts_vs_avg"],
+        "tier": ev["roster_tier"], "tier_color": ev["roster_tier_color"], "tier_icon": ev["roster_tier_icon"],
+        "blended_tier": ev["tier"], "roster_composite": ev["roster_composite"], "composite": ev["composite"],
+        "scores": ev["scores"], "strategy": ev["strategy"], "strat_color": ev["strat_color"], "strat_icon": ev["strat_icon"],
+        "verdict": verdict, "specifics": specifics,
+        "position_groups": position_groups, "needs": needs, "surplus": surplus,
+        "lineup": {"current_pts": cur_pts, "optimal_pts": opt_pts, "gain": round(opt_pts - cur_pts, 1), "moves": moves,
+                   "slots": [{"slot": x["slot"], "player": x["optimal"], "locked": x["locked"]} for x in lineup],
+                   "zero_starters": zero_starters, "injured_starters": injured_starters},
+        "season_log": log, "total_left_on_bench": total_left, "games_cost_by_lineup": games_cost, "avg_efficiency": avg_eff,
+        "schedule": schedule, "exp_remaining_wins": exp_remaining_wins, "proj_final": f"{proj_final_wins}-{proj_final_losses}",
+        "schedule_strength": sched_strength, "league_avg_strength": lg_avg_strength,
+        "draft": {"season": next_season, "picks": picks, "traded_away": traded_away, "rounds": num_rounds},
+        "sell_candidates": sell_candidates, "young_core": young_core,
+        "roster": roster,
+    }
+
 
 # ── SEASON FORECAST ───────────────────────────────────────────────────────────
 

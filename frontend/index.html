@@ -444,7 +444,7 @@ function WeekRecordView({ data }) {
       e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--accent3)', marginBottom: 10 } }, '⚡ SURPRISES'),
       data.results.filter(r => r.surprise).map(r =>
         e('div', { key: r.league, style: { display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid var(--border)' } },
-          e('div', null, e('div', { style: { fontWeight: 700, fontSize: 13 } }, r.league), e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, `vs ${r.opp_name}`)),
+          e('div', null, e('div', { style: { fontWeight: 700, fontSize: 13 } }, r.league), e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, `${r.team ? r.team + ' · ' : ''}vs ${r.opp_name}`)),
           e('div', { style: { textAlign: 'right' } },
             e('div', { style: { fontWeight: 700, fontSize: 11, color: r.surprise === 'upset_win' ? 'var(--accent)' : 'var(--accent2)' } }, r.surprise === 'upset_win' ? '🎉 Upset Win' : '😤 Upset Loss'),
             e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${r.my_actual?.toFixed(2)} – ${r.opp_actual?.toFixed(2)}`)
@@ -456,7 +456,7 @@ function WeekRecordView({ data }) {
     data.results.map(r => {
       const projColor = r.proj_win ? 'var(--accent)' : 'var(--accent2)';
       return e('div', { key: r.league, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${projColor}`, borderRadius: 8, marginBottom: 6, flexWrap: 'wrap' } },
-        e('div', { style: { flex: 1 } }, e('div', { style: { fontWeight: 700, fontSize: 13 } }, r.league), e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, `vs ${r.opp_name}`)),
+        e('div', { style: { flex: 1 } }, e('div', { style: { fontWeight: 700, fontSize: 13 } }, r.league), e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, `${r.team ? r.team + ' · ' : ''}vs ${r.opp_name}`)),
         e('div', { style: { textAlign: 'center', minWidth: 90 } }, e('div', { style: { fontSize: 12, fontWeight: 600 } }, `${r.my_proj} – ${r.opp_proj}`), e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'projected')),
         data.week_completed && e('div', { style: { textAlign: 'center', minWidth: 90 } }, e('div', { style: { fontSize: 12, fontWeight: 600 } }, `${r.my_actual?.toFixed(2)} – ${r.opp_actual?.toFixed(2)}`), e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'actual')),
         e('div', { style: { textAlign: 'right' } },
@@ -487,7 +487,7 @@ function ThereIsAChanceView({ data }) {
       const sc = STATUS_COLOR[r.status] || 'var(--text2)';
       return e(Card, { key: r.league, borderColor: sc },
         e('div', { className: 'card-header' },
-          e('div', null, e('div', { className: 'card-title' }, r.league), e('div', { className: 'card-subtitle' }, `vs ${r.opp_name}`)),
+          e('div', null, e('div', { className: 'card-title' }, r.league), e('div', { className: 'card-subtitle' }, `${r.team ? r.team + ' · ' : ''}vs ${r.opp_name}`)),
           e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.2rem', color: sc, textAlign: 'right' } }, r.status)
         ),
         e('div', { className: 'grid-2', style: { marginBottom: 10 } },
@@ -863,6 +863,7 @@ function TierRecordsView({ data }) {
             e('button', { onClick: () => toggle(r.league), style: { width: '100%', background: 'transparent', border: 'none', textAlign: 'left', cursor: 'pointer', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10 } },
               e('div', { style: { flex: 1, minWidth: 0 } },
                 e('div', { style: { fontSize: 13, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
+                r.team && e('div', { style: { fontSize: 11, color: 'var(--text2)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.team),
                 e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 2 } },
                   `#${r.rank}/${r.total_teams} · ${r.in_playoffs ? 'in playoff spot' : r.games_back > 0 ? `${r.games_back} back` : 'on the line'} · ${r.games_left} left`)
               ),
@@ -1180,7 +1181,7 @@ function WeekAnalysisView({ data }) {
         e('div', { className: 'card-header' },
           e('div', null,
             e('div', { className: 'card-title' }, r.league),
-            e('div', { className: 'card-subtitle' }, `vs ${r.opp_name}`)
+            e('div', { className: 'card-subtitle' }, `${r.team ? r.team + ' · ' : ''}vs ${r.opp_name}`)
           ),
           e('div', { style: { textAlign: 'right' } },
             e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', color: winColor } },
@@ -1250,7 +1251,7 @@ function SeasonForecastView({ data }) {
         e('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: 6 } },
           e('div', null,
             e('div', { style: { fontWeight: 700, fontSize: 14 } }, r.league),
-            e('div', { style: { fontSize: 11, color: 'var(--text2)', marginTop: 2 } }, `Current: ${r.current_record}`)
+            e('div', { style: { fontSize: 11, color: 'var(--text2)', marginTop: 2 } }, `${r.team ? r.team + ' · ' : ''}Current: ${r.current_record}`)
           ),
           e('div', { style: { textAlign: 'right' } },
             e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.4rem', color: barColor } }, r.projected_record),
@@ -1279,7 +1280,9 @@ function DraftPicksView({ data }) {
       e(StatTile, { value: data.results.filter(r => r.upcoming_picks?.length).length, label: 'Leagues', color: 'var(--text2)' })
     ),
     data.results.map(r => e(Card, { key: r.league },
-      e('div', { className: 'card-title', style: { marginBottom: 10 } }, r.league),
+      e('div', { className: 'card-title' }, r.league),
+      r.team && e('div', { className: 'card-subtitle', style: { marginBottom: 10 } }, r.team),
+      !r.team && e('div', { style: { marginBottom: 10 } }),
       r.upcoming_picks?.length === 0
         ? e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, 'No upcoming picks')
         : e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
@@ -1327,7 +1330,7 @@ function LiveDraftView({ data }) {
   return e('div', null,
     data.results.map(r => e(Card, { key: r.draft_id, borderColor: 'var(--accent2)' },
       e('div', { className: 'card-header' },
-        e('div', null, e('div', { className: 'card-title' }, r.league), e('div', { className: 'card-subtitle' }, r.status === 'drafting' ? '🔴 Live' : '⏸ Paused')),
+        e('div', null, e('div', { className: 'card-title' }, r.league), e('div', { className: 'card-subtitle' }, `${r.team ? r.team + ' · ' : ''}${r.status === 'drafting' ? '🔴 Live' : '⏸ Paused'}`)),
         e('div', { style: { textAlign: 'right' } },
           e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.4rem', color: 'var(--accent2)' } }, `Pick ${r.current_pick}`),
           e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, `On clock: ${r.picks_on_clock}`)
@@ -1538,7 +1541,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.3')
+        e('span', { className: 'app-version' }, 'v10.4')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

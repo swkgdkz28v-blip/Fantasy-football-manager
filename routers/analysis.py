@@ -68,13 +68,16 @@ async def get_injured_starters(req: UserRequest):
     results = []
 
     for league in leagues:
-        rosters, matchups = await asyncio.gather(
+        rosters, matchups, league_users = await asyncio.gather(
             get_rosters(league["league_id"]),
-            get_matchups(league["league_id"], week)
+            get_matchups(league["league_id"], week),
+            get_league_users(league["league_id"])
         )
         my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
         if not my_roster:
             continue
+        _mu = next((u for u in league_users if u["user_id"] == user_id), None)
+        my_team_name = (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
         my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
         starters = my_matchup.get("starters", []) if my_matchup else my_roster.get("starters", [])
 
@@ -88,7 +91,7 @@ async def get_injured_starters(req: UserRequest):
                 injured.append({"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team"), "status": p.get("injury_status")})
 
         if injured:
-            results.append({"league": league["name"], "injured": injured})
+            results.append({"league": league["name"], "team": my_team_name, "injured": injured})
 
     return {"results": results}
 
@@ -100,13 +103,16 @@ async def get_questionable_starters(req: UserRequest):
     results = []
 
     for league in leagues:
-        rosters, matchups = await asyncio.gather(
+        rosters, matchups, league_users = await asyncio.gather(
             get_rosters(league["league_id"]),
-            get_matchups(league["league_id"], week)
+            get_matchups(league["league_id"], week),
+            get_league_users(league["league_id"])
         )
         my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
         if not my_roster:
             continue
+        _mu = next((u for u in league_users if u["user_id"] == user_id), None)
+        my_team_name = (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
         my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
         starters = my_matchup.get("starters", []) if my_matchup else my_roster.get("starters", [])
 
@@ -120,7 +126,7 @@ async def get_questionable_starters(req: UserRequest):
                 questionable.append({"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team"), "status": p.get("injury_status")})
 
         if questionable:
-            results.append({"league": league["name"], "questionable": questionable})
+            results.append({"league": league["name"], "team": my_team_name, "questionable": questionable})
 
     return {"results": results}
 
@@ -132,13 +138,16 @@ async def get_starters_on_bye(req: UserRequest):
     results = []
 
     for league in leagues:
-        rosters, matchups = await asyncio.gather(
+        rosters, matchups, league_users = await asyncio.gather(
             get_rosters(league["league_id"]),
-            get_matchups(league["league_id"], week)
+            get_matchups(league["league_id"], week),
+            get_league_users(league["league_id"])
         )
         my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
         if not my_roster:
             continue
+        _mu = next((u for u in league_users if u["user_id"] == user_id), None)
+        my_team_name = (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
         my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
         starters = my_matchup.get("starters", []) if my_matchup else my_roster.get("starters", [])
 
@@ -152,7 +161,7 @@ async def get_starters_on_bye(req: UserRequest):
                 on_bye.append({"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team")})
 
         if on_bye:
-            results.append({"league": league["name"], "on_bye": on_bye})
+            results.append({"league": league["name"], "team": my_team_name, "on_bye": on_bye})
 
     return {"results": results}
 
@@ -164,18 +173,21 @@ async def get_open_starter_spots(req: UserRequest):
     results = []
 
     for league in leagues:
-        rosters, matchups = await asyncio.gather(
+        rosters, matchups, league_users = await asyncio.gather(
             get_rosters(league["league_id"]),
-            get_matchups(league["league_id"], week)
+            get_matchups(league["league_id"], week),
+            get_league_users(league["league_id"])
         )
         my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
         if not my_roster:
             continue
+        _mu = next((u for u in league_users if u["user_id"] == user_id), None)
+        my_team_name = (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
         my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
         starters = my_matchup.get("starters", []) if my_matchup else my_roster.get("starters", [])
         open_spots = [i for i, pid in enumerate(starters) if not pid or pid == "0"]
         if open_spots:
-            results.append({"league": league["name"], "open_slots": len(open_spots)})
+            results.append({"league": league["name"], "team": my_team_name, "open_slots": len(open_spots)})
 
     return {"results": results}
 
@@ -348,8 +360,11 @@ async def get_week_analysis(req: WeekRequest):
         optimal_pts = round(sum(o["player"]["pts"] for o in optimal), 2)
         gain = round(optimal_pts - my_pts, 2)
 
+        _mu = user_lookup.get(user_id)
+        my_team_name = (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
         results.append({
             "league": league["name"],
+            "team": my_team_name,
             "won": my_pts > opp_pts,
             "tied": my_pts == opp_pts,
             "my_pts": my_pts,
@@ -419,8 +434,11 @@ async def get_week_record(req: WeekRequest):
             if (proj_win != actual_won) and abs(proj_diff) > 5:
                 surprise = "upset_win" if actual_won else "upset_loss"
 
+        _mu = user_lookup.get(user_id)
+        my_team_name = (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
         results.append({
             "league": league["name"],
+            "team": my_team_name,
             "opp_name": opp_name,
             "my_proj": my_proj,
             "opp_proj": opp_proj,
@@ -515,7 +533,9 @@ async def get_theres_a_chance(req: UserRequest):
         if not currently_winning and opp_max > 0:
             deficit_pct = (opp_max - my_max) / opp_max
             if my_max < opp_max * (1 - IGNORE_THRESHOLD):
-                skipped.append({"league": league["name"], "my_live": my_live, "opp_live": opp_live, "my_max": my_max, "opp_max": opp_max})
+                _mu = user_lookup.get(user_id)
+                skipped.append({"league": league["name"], "team": (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", ""),
+                                "opp_name": opp_name, "my_live": my_live, "opp_live": opp_live, "my_max": my_max, "opp_max": opp_max})
                 continue
 
         can_win_math = my_max > opp_live
@@ -535,8 +555,11 @@ async def get_theres_a_chance(req: UserRequest):
         else:
             status = "LONG SHOT"
 
+        _mu = user_lookup.get(user_id)
+        my_team_name = (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
         results.append({
             "league": league["name"],
+            "team": my_team_name,
             "opp_name": opp_name,
             "my_live": my_live,
             "opp_live": opp_live,
@@ -1576,8 +1599,11 @@ async def get_season_forecast(req: UserRequest):
             else:
                 proj_losses += 1
 
+        _mu = user_lookup.get(user_id)
+        my_team_name = (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
         results.append({
             "league": league["name"],
+            "team": my_team_name,
             "current_record": f"{wins}-{losses}",
             "projected_record": f"{proj_wins}-{proj_losses}",
             "proj_wins": proj_wins,
@@ -1619,7 +1645,9 @@ async def get_draft_picks(req: UserRequest):
                 orig_name = (orig_user or {}).get("display_name", f"Roster {pick.get('roster_id')}")
                 upcoming.append({"round": pick["round"], "season": pick["season"], "original_owner": orig_name})
 
-        results.append({"league": league["name"], "upcoming_picks": sorted(upcoming, key=lambda x: x["round"])})
+        _mu = next((u for u in league_users if u["user_id"] == user_id), None)
+        my_team_name = (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
+        results.append({"league": league["name"], "team": my_team_name, "upcoming_picks": sorted(upcoming, key=lambda x: x["round"])})
 
     return {"results": results}
 
@@ -1706,8 +1734,10 @@ async def get_live_draft(req: UserRequest):
                 p["player_name"] = player_name(pl) if pl else str(pid)
                 p["position"] = (pl or {}).get("position", "")
 
+            _mu = user_lookup.get(user_id)
             results.append({
                 "league": league["name"],
+                "team": (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", ""),
                 "draft_id": draft["draft_id"],
                 "status": draft.get("status"),
                 "current_pick": current_pick,

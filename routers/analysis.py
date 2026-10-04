@@ -782,12 +782,9 @@ async def get_optimal_lineup(req: UserRequest):
             played = has_played(pid)
             proj = round(proj_map.get(pid, 0), 1)
             avg, gp = season_avg(pid)
-            if played:
-                pts = actual_pts.get(pid, 0)          # locked in: real score
-            elif gp > 0:
-                pts = round(proj * 0.6 + avg * 0.4, 1)  # blend projection with per-game average
-            else:
-                pts = proj                            # no games yet: projection only
+            # Ranking uses the week projection (actual points once a player has played);
+            # season average / games played are informational only.
+            pts = actual_pts.get(pid, 0) if played else proj
             pool.append({
                 "id": pid, "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team", "FA"),
                 "pts": pts, "proj": proj, "avg": avg, "gp": gp,
@@ -968,13 +965,15 @@ async def get_upgrade_recommendations(req: UserRequest):
         starter_slots = [s for s in league.get("roster_positions", []) if s not in ("BN", "IR", "TAXI")]
 
         def score(pid):
-            """Returns (week_proj, season_avg_per_game_played, blended, games_played)."""
+            """Returns (week_proj, season_avg_per_game_played, floor, games_played).
+            floor = the LOWER of projection and season average — recommendations are
+            conservative. Players with 0 games played fall back to projection."""
             wk = proj_map.get(pid, 0)
             raw = ytd.get(pid) or {}
             gp = int(raw.get("gp", 0) or 0)
             avg = sum(ss.get(k, 0) * v for k, v in raw.items()) / gp if gp > 0 else 0
-            blended = wk * 0.6 + avg * 0.4 if gp > 0 else wk
-            return round(wk, 1), round(avg, 1), round(blended, 1), gp
+            floor = min(wk, avg) if gp > 0 else wk
+            return round(wk, 1), round(avg, 1), round(floor, 1), gp
 
         rosters, league_users, matchups = await asyncio.gather(
             get_rosters(league["league_id"]), get_league_users(league["league_id"]), get_matchups(league["league_id"], week)

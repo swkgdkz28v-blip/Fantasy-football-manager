@@ -573,7 +573,8 @@ function OptimalLineupView({ data }) {
         )
       ),
       e(MovesList, { moves: r.moves, ptsKey: 'pts' }),
-      e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6 } }, 'Optimal Lineup'),
+      e('details', null,
+      e('summary', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6, cursor: 'pointer' } }, 'Full optimal lineup'),
       r.lineup?.map((os, i) => {
         const p = os.player;
         if (!p) return e('div', { key: i, className: 'player-row', style: { opacity: 0.5 } }, e('span', { style: { fontSize: 10, color: 'var(--text3)', minWidth: 52 } }, os.slot), e('span', { style: { fontSize: 11, color: 'var(--accent2)' } }, 'Empty'));
@@ -590,7 +591,7 @@ function OptimalLineupView({ data }) {
           ),
           e('span', { className: 'player-pts', style: { color: ptColor } }, p.pts)
         );
-      })
+      }))
     )),
     data.results?.length > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginBottom: 10 } },
       data.weeks_completed > 0
@@ -1308,6 +1309,14 @@ function WaiverWatchView({ data }) {
 function PlayoffOddsView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No leagues still in the regular season.'));
   const sm = data.summary || {};
+  const needsCard = r => (r.playoff_pct >= 10 && r.playoff_pct < 85) || (r.next_game && r.next_game.swing >= 20);
+  const focus = data.results.filter(needsCard);
+  const safe = data.results.filter(r => !needsCard(r) && r.playoff_pct >= 85);
+  const out = data.results.filter(r => !needsCard(r) && r.playoff_pct < 85);
+  const oneLiner = (r, extra) => e('div', { key: r.league, style: { display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, padding: '4px 0', borderBottom: '1px solid var(--border)' } },
+    e('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } }, r.league, r.team ? e('span', { style: { color: 'var(--text3)', fontSize: 10 } }, ` · ${r.team}`) : null),
+    e('span', { style: { whiteSpace: 'nowrap', color: 'var(--text3)' } }, `${r.record} · #${r.rank} · `, e('span', { style: { color: r.color, fontWeight: 700 } }, `${r.playoff_pct}%`), extra ? ` · ${extra}` : '')
+  );
   return e('div', null,
     e('div', { className: 'stat-row' },
       e(StatTile, { value: sm.leagues ?? 0, label: 'Leagues', color: 'var(--text2)' }),
@@ -1315,17 +1324,9 @@ function PlayoffOddsView({ data }) {
       e(StatTile, { value: sm.bubble ?? 0, label: 'Bubble', color: 'var(--accent3)' }),
       e(StatTile, { value: sm.out ?? 0, label: 'Out (<10%)', color: 'var(--accent2)' })
     ),
-    e(Card, null,
-      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 8 } }, 'Playoff Probability By League'),
-      data.results.map(r => e('div', { key: r.league, style: { marginBottom: 8 } },
-        e('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 2 } },
-          e('span', { style: { fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } }, r.league, e('span', { style: { color: 'var(--text3)', fontWeight: 400, fontSize: 10 } }, ` · ${r.record}`)),
-          e('span', { style: { color: r.color, fontWeight: 800, marginLeft: 8 } }, `${r.playoff_pct}%`)
-        ),
-        e('div', { className: 'bar-track' }, e('div', { className: 'bar-fill', style: { width: `${r.playoff_pct}%`, background: r.color } }))
-      ))
-    ),
-    data.results.map(r => {
+    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 12 } },
+      `${focus.length} league${focus.length === 1 ? '' : 's'} where this week's decisions move the needle (bubble or must-win). Safe and eliminated leagues are listed at the bottom.`),
+    focus.map(r => {
       const hist = Object.entries(r.wins_hist || {});
       const maxH = Math.max(...hist.map(([, v]) => v), 1);
       return e(Card, { key: r.league, borderColor: r.color },
@@ -1336,38 +1337,35 @@ function PlayoffOddsView({ data }) {
             e('div', { style: { fontSize: 10, color: r.color, fontWeight: 700 } }, r.status)
           )
         ),
-        e('div', { className: 'grid-2', style: { gap: 8, marginBottom: 10 } },
-          e('div', { style: { fontSize: 11, color: 'var(--text2)' } },
-            e('div', null, `Record ${r.record} · #${r.rank}/${r.total_teams}`),
-            e('div', null, `${r.playoff_spots} playoff spots${r.byes ? ` · ${r.byes} bye${r.byes > 1 ? 's' : ''}` : ''}`),
-            e('div', null, `${r.games_left} game${r.games_left === 1 ? '' : 's'} left · exp. ${r.exp_wins} wins`)
-          ),
-          e('div', { style: { fontSize: 11, color: 'var(--text2)' } },
-            e('div', null, `Bye odds: ${r.bye_pct}%`),
-            e('div', null, `Scoring ${r.my_mu} ± ${r.my_sd} (lg avg ${r.league_mu})`),
-            e('div', null, `${r.games_sampled} game${r.games_sampled === 1 ? '' : 's'} of actual data`)
-          )
+        e('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 8 } },
+          `${r.record} · #${r.rank}/${r.total_teams} · ${r.playoff_spots} spots · ${r.games_left} left · exp. ${r.exp_wins} W · scoring ${r.my_mu} ± ${r.my_sd} (lg ${r.league_mu})${r.bye_pct > 0 ? ` · bye ${r.bye_pct}%` : ''}`),
+        r.next_game && e('div', { style: { padding: '8px 10px', background: r.next_game.swing >= 20 ? 'rgba(255,179,71,0.08)' : 'var(--surface2, var(--surface))', border: `1px solid ${r.next_game.swing >= 20 ? 'rgba(255,179,71,0.4)' : 'var(--border)'}`, borderRadius: 8, marginBottom: 8, fontSize: 11 } },
+          e('div', { style: { fontWeight: 700 } }, `${r.next_game.swing >= 20 ? '🔥 Must-win: ' : 'Next: '}Wk ${r.next_game.week} vs ${r.next_game.opp_name} (${r.next_game.win_prob}% to win)`),
+          e('div', { style: { color: 'var(--text2)', marginTop: 2 } }, `Playoffs ${r.next_game.playoff_if_win}% with a win · ${r.next_game.playoff_if_loss}% with a loss`)
         ),
-        r.next_game && e('div', { style: { padding: '8px 10px', background: r.next_game.swing >= 20 ? 'rgba(255,179,71,0.08)' : 'var(--surface2, var(--surface))', border: `1px solid ${r.next_game.swing >= 20 ? 'rgba(255,179,71,0.4)' : 'var(--border)'}`, borderRadius: 8, marginBottom: 10, fontSize: 11 } },
-          e('div', { style: { fontWeight: 700 } }, `${r.next_game.swing >= 20 ? '🔥 Must-win: ' : 'Next: '}Week ${r.next_game.week} vs ${r.next_game.opp_name} (${r.next_game.win_prob}% to win)`),
-          e('div', { style: { color: 'var(--text2)', marginTop: 2 } }, `Playoff odds → ${r.next_game.playoff_if_win}% with a win · ${r.next_game.playoff_if_loss}% with a loss (swing ${r.next_game.swing})`)
-        ),
-        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 4 } }, 'Final Wins Distribution'),
-        e('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 3, height: 44, marginBottom: 10 } },
-          hist.map(([w, pct]) => e('div', { key: w, style: { flex: 1, textAlign: 'center' } },
-            e('div', { style: { height: `${Math.max(2, (pct / maxH) * 32)}px`, background: r.color, opacity: 0.8, borderRadius: 2 } }),
-            e('div', { style: { fontSize: 9, color: 'var(--text3)', marginTop: 2 } }, w)
-          ))
-        ),
-        e('div', { style: { fontSize: 11, color: 'var(--text2)', padding: '8px 10px', borderLeft: `2px solid ${r.color}`, marginBottom: 10 } }, r.advice),
+        e('div', { style: { fontSize: 11, color: 'var(--text2)', padding: '6px 10px', borderLeft: `2px solid ${r.color}`, marginBottom: 8 } }, r.advice),
         e('details', null,
-          e('summary', { style: { fontSize: 10, color: 'var(--text3)', cursor: 'pointer' } }, 'League table (odds for every team)'),
+          e('summary', { style: { fontSize: 10, color: 'var(--text3)', cursor: 'pointer' } }, 'Wins distribution & league table'),
+          e('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 3, height: 44, margin: '8px 0' } },
+            hist.map(([w, pct]) => e('div', { key: w, style: { flex: 1, textAlign: 'center' } },
+              e('div', { style: { height: `${Math.max(2, (pct / maxH) * 32)}px`, background: r.color, opacity: 0.8, borderRadius: 2 } }),
+              e('div', { style: { fontSize: 9, color: 'var(--text3)', marginTop: 2 } }, w)
+            ))
+          ),
           r.league_table?.map((t, i) => e('div', { key: i, style: { display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '3px 0', borderBottom: '1px solid var(--border)', color: t.team === r.team ? 'var(--accent)' : 'var(--text2)' } },
             e('span', null, `${i + 1}. ${t.team}`), e('span', null, `${t.wins} W · ${t.playoff_pct}%`)
           ))
         )
       );
     }),
+    safe.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 6 } }, `✅ Safe / clinched (${safe.length}) — bank FAAB`),
+      safe.map(r => oneLiner(r, r.bye_pct > 0 ? `bye ${r.bye_pct}%` : null))
+    ),
+    out.length > 0 && e(Card, { borderColor: 'var(--accent2)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent2)', marginBottom: 6 } }, `🔨 Out of it (${out.length}) — sell mode`),
+      out.map(r => oneLiner(r, r.status))
+    ),
     data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
   );
 }
@@ -1388,9 +1386,10 @@ function WeeklyDigestView({ data }) {
       e(StatTile, { value: sm.medium ?? 0, label: 'Medium', color: 'var(--accent4)' }),
       e(StatTile, { value: sm.clean ?? 0, label: 'Clean', color: 'var(--accent)' })
     ),
-    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 12 } }, `${sm.total_actions ?? 0} action item${sm.total_actions === 1 ? '' : 's'} across ${sm.leagues ?? 0} leagues, most urgent first.`),
+    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 12 } }, `${sm.total_actions ?? 0} action item${sm.total_actions === 1 ? '' : 's'} across ${sm.leagues ?? 0} leagues, in your Sleeper league order.`),
     data.errors?.length > 0 && e(Alert, { type: 'warning', title: 'Some checks failed' }, data.errors.map((x, i) => e('div', { key: i, style: { fontSize: 11 } }, x))),
-    data.leagues?.map(lg => {
+    (() => { const act = (data.leagues || []).filter(lg => lg.action_count > 0); return act.length === 0 && e(Alert, { type: 'success', title: 'All clear' }, e('p', null, 'No league needs anything this week.')); })(),
+    (data.leagues || []).filter(lg => lg.action_count > 0).map(lg => {
       const lv = LV[lg.urgency] || LV.INFO;
       return e(Card, { key: lg.league, borderColor: lv.color },
         e('div', { className: 'card-header' },
@@ -1413,7 +1412,24 @@ function WeeklyDigestView({ data }) {
             );
           })
       );
-    })
+    }),
+    (() => {
+      const ignore = (data.leagues || []).filter(lg => lg.action_count === 0);
+      if (!ignore.length) return null;
+      return e(Card, { borderColor: 'var(--accent)' },
+        e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 8 } }, `✅ You can ignore (${ignore.length}) — nothing to do this week`),
+        ignore.map(lg => {
+          const odds = lg.items.find(i => i.type === 'odds');
+          const live = lg.items.find(i => i.type === 'live');
+          return e('div', { key: lg.league, style: { display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, padding: '4px 0', borderBottom: '1px solid var(--border)' } },
+            e('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } }, lg.league,
+              lg.team ? e('span', { style: { color: 'var(--text3)', fontSize: 10 } }, ` · ${lg.team}`) : null),
+            e('span', { style: { color: 'var(--text3)', whiteSpace: 'nowrap' } },
+              [lg.record, lg.playoff_pct != null ? `${lg.playoff_pct}%` : null, live ? '🔴 live' : null].filter(Boolean).join(' · '))
+          );
+        })
+      );
+    })()
   );
 }
 
@@ -1728,7 +1744,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.8')
+        e('span', { className: 'app-version' }, 'v10.10')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

@@ -1251,6 +1251,172 @@ function UpgradeRecsView({ data }) {
   );
 }
 
+// ── WAIVER WATCH VIEW ─────────────────────────────────────────────────────────
+function WaiverWatchView({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  const TREND = { rising: ['📈 Rising', 'var(--accent)'], fading: ['📉 Fading', 'var(--accent2)'], steady: ['➡ Steady', 'var(--text3)'] };
+  const candRow = (c, i, showLeague) => e('div', { key: c.id + i, style: { padding: '8px 10px', background: 'var(--surface2, var(--surface))', border: '1px solid var(--border)', borderRadius: 8, marginBottom: 6 } },
+    e('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+      e(PosBadge, { pos: c.position }),
+      e('div', { style: { flex: 1, minWidth: 0 } },
+        e('div', { style: { fontSize: 12, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, c.name,
+          c.under_radar && e('span', { style: { marginLeft: 6, fontSize: 9, color: 'var(--accent4)', fontWeight: 700 } }, 'UNDER RADAR')),
+        e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${c.team}${showLeague ? ` · ${c.league}` : ''} · proj ${c.proj} · avg ${c.avg}${c.std != null ? ` ±${c.std}` : ''} · last 2: ${c.recent} · ${c.gp} GP`)
+      ),
+      e('div', { style: { textAlign: 'right' } },
+        e('div', { style: { fontSize: 14, fontWeight: 800, color: 'var(--accent)' } }, `+${c.gain}`),
+        e('div', { style: { fontSize: 9, color: TREND[c.trend]?.[1] || 'var(--text3)' } }, TREND[c.trend]?.[0] || c.trend)
+      )
+    ),
+    e('div', { style: { fontSize: 10, color: 'var(--text2)', marginTop: 4 } },
+      `Replaces ${c.replaces?.name || 'empty slot'} at ${c.replaces?.slot} (floor ${c.replaces?.floor})`,
+      c.drop_candidate ? ` · Drop ${c.drop_candidate.name} (${c.drop_candidate.position}, avg ${c.drop_candidate.avg}, ${c.drop_candidate.gp} GP)` : '',
+      c.trending_adds > 0 ? ` · 🔥 ${c.trending_adds} adds/24h` : ''
+    )
+  );
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.leagues ?? 0, label: 'Leagues', color: 'var(--text2)' }),
+      e(StatTile, { value: sm.leagues_with_pickups ?? 0, label: 'With Pickups', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.total_candidates ?? 0, label: 'Candidates', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.under_radar ?? 0, label: 'Under Radar', color: 'var(--accent4)' })
+    ),
+    sm.top?.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 8 } }, '🏆 Best Pickups Across All Leagues'),
+      sm.top.map((c, i) => candRow(c, i, true))
+    ),
+    data.results?.filter(r => r.candidates?.length).map(r => e(Card, { key: r.league, borderColor: 'var(--accent3)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.4rem', color: 'var(--accent)' } }, `+${r.best_gain}`),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${r.total_candidates} candidate${r.total_candidates === 1 ? '' : 's'}`)
+        )
+      ),
+      r.candidates.map((c, i) => candRow(c, i, false))
+    )),
+    (() => { const none = data.results?.filter(r => !r.candidates?.length) || []; return none.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, color: 'var(--accent)', fontWeight: 700, marginBottom: 6 } }, `✅ Nothing worth grabbing (${none.length})`),
+      none.map(r => e('div', { key: r.league, style: { fontSize: 12, padding: '4px 0', borderBottom: '1px solid var(--border)' } }, r.league, r.team ? e('span', { style: { color: 'var(--text3)', fontSize: 10 } }, ` · ${r.team}`) : null))
+    ); })(),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
+  );
+}
+
+// ── PLAYOFF ODDS VIEW ─────────────────────────────────────────────────────────
+function PlayoffOddsView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No leagues still in the regular season.'));
+  const sm = data.summary || {};
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.leagues ?? 0, label: 'Leagues', color: 'var(--text2)' }),
+      e(StatTile, { value: sm.clinched_or_safe ?? 0, label: 'Safe (≥85%)', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.bubble ?? 0, label: 'Bubble', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.out ?? 0, label: 'Out (<10%)', color: 'var(--accent2)' })
+    ),
+    e(Card, null,
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 8 } }, 'Playoff Probability By League'),
+      data.results.map(r => e('div', { key: r.league, style: { marginBottom: 8 } },
+        e('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 2 } },
+          e('span', { style: { fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } }, r.league, e('span', { style: { color: 'var(--text3)', fontWeight: 400, fontSize: 10 } }, ` · ${r.record}`)),
+          e('span', { style: { color: r.color, fontWeight: 800, marginLeft: 8 } }, `${r.playoff_pct}%`)
+        ),
+        e('div', { className: 'bar-track' }, e('div', { className: 'bar-fill', style: { width: `${r.playoff_pct}%`, background: r.color } }))
+      ))
+    ),
+    data.results.map(r => {
+      const hist = Object.entries(r.wins_hist || {});
+      const maxH = Math.max(...hist.map(([, v]) => v), 1);
+      return e(Card, { key: r.league, borderColor: r.color },
+        e('div', { className: 'card-header' },
+          e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+          e('div', { style: { textAlign: 'right' } },
+            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', color: r.color } }, `${r.playoff_pct}%`),
+            e('div', { style: { fontSize: 10, color: r.color, fontWeight: 700 } }, r.status)
+          )
+        ),
+        e('div', { className: 'grid-2', style: { gap: 8, marginBottom: 10 } },
+          e('div', { style: { fontSize: 11, color: 'var(--text2)' } },
+            e('div', null, `Record ${r.record} · #${r.rank}/${r.total_teams}`),
+            e('div', null, `${r.playoff_spots} playoff spots${r.byes ? ` · ${r.byes} bye${r.byes > 1 ? 's' : ''}` : ''}`),
+            e('div', null, `${r.games_left} game${r.games_left === 1 ? '' : 's'} left · exp. ${r.exp_wins} wins`)
+          ),
+          e('div', { style: { fontSize: 11, color: 'var(--text2)' } },
+            e('div', null, `Bye odds: ${r.bye_pct}%`),
+            e('div', null, `Scoring ${r.my_mu} ± ${r.my_sd} (lg avg ${r.league_mu})`),
+            e('div', null, `${r.games_sampled} game${r.games_sampled === 1 ? '' : 's'} of actual data`)
+          )
+        ),
+        r.next_game && e('div', { style: { padding: '8px 10px', background: r.next_game.swing >= 20 ? 'rgba(255,179,71,0.08)' : 'var(--surface2, var(--surface))', border: `1px solid ${r.next_game.swing >= 20 ? 'rgba(255,179,71,0.4)' : 'var(--border)'}`, borderRadius: 8, marginBottom: 10, fontSize: 11 } },
+          e('div', { style: { fontWeight: 700 } }, `${r.next_game.swing >= 20 ? '🔥 Must-win: ' : 'Next: '}Week ${r.next_game.week} vs ${r.next_game.opp_name} (${r.next_game.win_prob}% to win)`),
+          e('div', { style: { color: 'var(--text2)', marginTop: 2 } }, `Playoff odds → ${r.next_game.playoff_if_win}% with a win · ${r.next_game.playoff_if_loss}% with a loss (swing ${r.next_game.swing})`)
+        ),
+        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 4 } }, 'Final Wins Distribution'),
+        e('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 3, height: 44, marginBottom: 10 } },
+          hist.map(([w, pct]) => e('div', { key: w, style: { flex: 1, textAlign: 'center' } },
+            e('div', { style: { height: `${Math.max(2, (pct / maxH) * 32)}px`, background: r.color, opacity: 0.8, borderRadius: 2 } }),
+            e('div', { style: { fontSize: 9, color: 'var(--text3)', marginTop: 2 } }, w)
+          ))
+        ),
+        e('div', { style: { fontSize: 11, color: 'var(--text2)', padding: '8px 10px', borderLeft: `2px solid ${r.color}`, marginBottom: 10 } }, r.advice),
+        e('details', null,
+          e('summary', { style: { fontSize: 10, color: 'var(--text3)', cursor: 'pointer' } }, 'League table (odds for every team)'),
+          r.league_table?.map((t, i) => e('div', { key: i, style: { display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '3px 0', borderBottom: '1px solid var(--border)', color: t.team === r.team ? 'var(--accent)' : 'var(--text2)' } },
+            e('span', null, `${i + 1}. ${t.team}`), e('span', null, `${t.wins} W · ${t.playoff_pct}%`)
+          ))
+        )
+      );
+    }),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
+  );
+}
+
+// ── WEEKLY DIGEST VIEW ────────────────────────────────────────────────────────
+function WeeklyDigestView({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  const LV = {
+    CRITICAL: { color: 'var(--accent2)', icon: '🚨' }, HIGH: { color: 'var(--accent3)', icon: '🔶' },
+    MEDIUM: { color: 'var(--accent4)', icon: '🔹' }, INFO: { color: 'var(--text3)', icon: 'ℹ️' }, CLEAN: { color: 'var(--accent)', icon: '✅' },
+  };
+  return e('div', null,
+    e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 8 } }, `WEEK ${data.week} CHECKLIST`),
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.critical ?? 0, label: 'Critical', color: 'var(--accent2)' }),
+      e(StatTile, { value: sm.high ?? 0, label: 'High', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.medium ?? 0, label: 'Medium', color: 'var(--accent4)' }),
+      e(StatTile, { value: sm.clean ?? 0, label: 'Clean', color: 'var(--accent)' })
+    ),
+    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 12 } }, `${sm.total_actions ?? 0} action item${sm.total_actions === 1 ? '' : 's'} across ${sm.leagues ?? 0} leagues, most urgent first.`),
+    data.errors?.length > 0 && e(Alert, { type: 'warning', title: 'Some checks failed' }, data.errors.map((x, i) => e('div', { key: i, style: { fontSize: 11 } }, x))),
+    data.leagues?.map(lg => {
+      const lv = LV[lg.urgency] || LV.INFO;
+      return e(Card, { key: lg.league, borderColor: lv.color },
+        e('div', { className: 'card-header' },
+          e('div', null, e('div', { className: 'card-title' }, lg.league), e('div', { className: 'card-subtitle' }, [lg.team, lg.record, lg.playoff_pct != null ? `${lg.playoff_pct}% playoffs` : null].filter(Boolean).join(' · '))),
+          e('div', { style: { textAlign: 'right' } },
+            e('div', { style: { fontSize: 12, fontWeight: 800, color: lv.color } }, `${lv.icon} ${lg.urgency}`),
+            lg.action_count > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${lg.action_count} to do`)
+          )
+        ),
+        lg.items.length === 0
+          ? e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, 'Nothing to do here this week.')
+          : lg.items.map((it, i) => {
+            const c = LV[it.level] || LV.INFO;
+            return e('div', { key: i, style: { display: 'flex', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border)' } },
+              e('span', { style: { fontSize: 12, minWidth: 18 } }, c.icon),
+              e('div', { style: { flex: 1, minWidth: 0 } },
+                e('div', { style: { fontSize: 12, fontWeight: it.level === 'INFO' ? 400 : 700, color: it.level === 'INFO' ? 'var(--text2)' : 'var(--text)' } }, it.text),
+                it.detail && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 2 } }, it.detail)
+              )
+            );
+          })
+      );
+    })
+  );
+}
+
 // ── SEASON FORECAST VIEW ──────────────────────────────────────────────────────
 function SeasonForecastView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
@@ -1376,6 +1542,7 @@ const SECTIONS = [
   {
     label: 'Lineup & Schedule',
     features: [
+      { id: 'weekly-digest', label: '☀️ Weekly Digest', endpoint: '/analysis/weekly-digest' },
       { id: 'week-analysis', label: '📊 Week Analysis', endpoint: '/analysis/week', needsWeek: true },
       { id: 'week-review', label: '📝 Week Review', endpoint: '/analysis/week-review', needsWeek: true },
       { id: 'week-record', label: '🎯 Week Record', endpoint: '/analysis/week-record', needsWeek: true },
@@ -1399,6 +1566,7 @@ const SECTIONS = [
       { id: 'upgrade', label: '🔼 Upgrade Recs', endpoint: '/analysis/upgrade-recommendations' },
       { id: 'starter-upgrades', label: '⬆ Starter Upgrades', endpoint: '/analysis/starter-upgrades' },
       { id: 'bench-vs-fa', label: '🔄 Bench vs FA', endpoint: '/analysis/bench-vs-fa' },
+      { id: 'waiver-watch', label: '👀 Waiver Watch', endpoint: '/analysis/waiver-watch' },
       { id: 'position-needs', label: '📍 My Position Needs', endpoint: '/analysis/position-needs' },
     ]
   },
@@ -1414,6 +1582,7 @@ const SECTIONS = [
   {
     label: 'Predictions',
     features: [
+      { id: 'playoff-odds', label: '🎰 Playoff Odds', endpoint: '/analysis/playoff-odds' },
       { id: 'season-forecast', label: '📈 Season Forecast', endpoint: '/analysis/season-forecast' },
       { id: 'week-record-pred', label: '🎯 Week Record', endpoint: '/analysis/week-record', needsWeek: true },
     ]
@@ -1541,6 +1710,12 @@ function App() {
         return e(StarterUpgradesView, { data });
       case 'bench-vs-fa':
         return e(BenchVsFaView, { data });
+      case 'waiver-watch':
+        return e(WaiverWatchView, { data });
+      case 'playoff-odds':
+        return e(PlayoffOddsView, { data });
+      case 'weekly-digest':
+        return e(WeeklyDigestView, { data });
       default:
         return e(GenericView, { data, title: feature.label });
     }
@@ -1553,7 +1728,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.7')
+        e('span', { className: 'app-version' }, 'v10.8')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

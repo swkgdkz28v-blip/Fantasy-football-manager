@@ -716,6 +716,33 @@ def lineup_moves(lineup):
 
 # ── OPTIMAL LINEUP ────────────────────────────────────────────────────────────
 
+
+# ── SEASON STATS HELPERS (shared by Optimal Lineup + Upgrade Recs) ────────────
+
+async def _weekly_stats_by_player(season, weeks_completed):
+    """{player_id: [weekly raw-stat dicts for weeks the player actually played (gp>=1)]}"""
+    by_player = {}
+    if weeks_completed <= 0:
+        return by_player
+    for week_data in await asyncio.gather(*[get_stats(season, w) for w in range(1, weeks_completed + 1)]):
+        for pid, st in build_stats_map(week_data).items():
+            if (st.get("gp") or 0) >= 1:
+                by_player.setdefault(pid, []).append(st)
+    return by_player
+
+
+def _season_line(weekly, ss):
+    """Score each played week with the league's scoring_settings.
+    Returns (avg_per_game, std_dev, games_played, [weekly points]).
+    std_dev is sample standard deviation (None with fewer than 2 games)."""
+    if not weekly:
+        return 0.0, None, 0, []
+    pts = [round(sum(ss.get(k, 0) * v for k, v in st.items() if isinstance(v, (int, float))), 2) for st in weekly]
+    gp = len(pts)
+    avg = sum(pts) / gp
+    sd = (sum((x - avg) ** 2 for x in pts) / (gp - 1)) ** 0.5 if gp >= 2 else None
+    return round(avg, 1), (round(sd, 1) if sd is not None else None), gp, pts
+
 @router.post("/analysis/optimal-lineup")
 async def get_optimal_lineup(req: UserRequest):
     user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
@@ -728,15 +755,7 @@ async def get_optimal_lineup(req: UserRequest):
     stats_map = build_stats_map(stats_array)
     has_played = lambda pid: stats_map.get(str(pid), {}).get("gp", 0) >= 1
 
-    # Season-to-date raw stats, summed per player (gp = games actually played)
-    ytd = {}
-    if weeks_completed > 0:
-        for week_data in await asyncio.gather(*[get_stats(season, w) for w in range(1, weeks_completed + 1)]):
-            for pid, st in build_stats_map(week_data).items():
-                acc = ytd.setdefault(pid, {})
-                for k, v in st.items():
-                    if isinstance(v, (int, float)):
-                        acc[k] = acc.get(k, 0) + v
+    weekly_by_player = await _weekly_stats_by_player(season, weeks_completed)
 
     results, optimal_leagues = [], []
 
@@ -745,16 +764,6 @@ async def get_optimal_lineup(req: UserRequest):
         proj_map = build_proj_map(proj_array, ss)
         starter_slots = [s for s in league.get("roster_positions", []) if s not in ("BN", "IR", "TAXI")]
 
-        def season_avg(pid):
-            """League-scored season points per game played. Returns (avg, gp)."""
-            raw = ytd.get(pid)
-            if not raw:
-                return 0.0, 0
-            gp = int(raw.get("gp", 0) or 0)
-            if gp <= 0:
-                return 0.0, 0
-            total = sum(ss.get(k, 0) * v for k, v in raw.items())
-            return round(total / gp, 1), gp
 
         rosters, league_users, matchups = await asyncio.gather(
             get_rosters(league["league_id"]), get_league_users(league["league_id"]), get_matchups(league["league_id"], week)
@@ -781,13 +790,13 @@ async def get_optimal_lineup(req: UserRequest):
                 continue
             played = has_played(pid)
             proj = round(proj_map.get(pid, 0), 1)
-            avg, gp = season_avg(pid)
+            avg, sd, gp, _ = _season_line(weekly_by_player.get(pid), ss)
             # Ranking uses the week projection (actual points once a player has played);
             # season average / games played are informational only.
             pts = actual_pts.get(pid, 0) if played else proj
             pool.append({
                 "id": pid, "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team", "FA"),
-                "pts": pts, "proj": proj, "avg": avg, "gp": gp,
+                "pts": pts, "proj": proj, "avg": avg, "std": sd, "gp": gp,
                 "has_played": played, "injury_status": p.get("injury_status"), "is_starter": pid in starter_set,
             })
 
@@ -949,14 +958,7 @@ async def get_upgrade_recommendations(req: UserRequest):
     stats_map = build_stats_map(stats_array)
     has_played = lambda pid: stats_map.get(str(pid), {}).get("gp", 0) >= 1
 
-    ytd = {}
-    if weeks_completed > 0:
-        for week_data in await asyncio.gather(*[get_stats(season, w) for w in range(1, weeks_completed + 1)]):
-            for pid, st in build_stats_map(week_data).items():
-                acc = ytd.setdefault(pid, {})
-                for k, v in st.items():
-                    if isinstance(v, (int, float)):
-                        acc[k] = acc.get(k, 0) + v
+    weekly_by_player = await _weekly_stats_by_player(season, weeks_completed)
 
     results = []
     for league in leagues:
@@ -965,15 +967,13 @@ async def get_upgrade_recommendations(req: UserRequest):
         starter_slots = [s for s in league.get("roster_positions", []) if s not in ("BN", "IR", "TAXI")]
 
         def score(pid):
-            """Returns (week_proj, season_avg_per_game_played, floor, games_played).
+            """Returns (week_proj, season_avg_per_game, std_dev, floor, games_played).
             floor = the LOWER of projection and season average — recommendations are
             conservative. Players with 0 games played fall back to projection."""
             wk = proj_map.get(pid, 0)
-            raw = ytd.get(pid) or {}
-            gp = int(raw.get("gp", 0) or 0)
-            avg = sum(ss.get(k, 0) * v for k, v in raw.items()) / gp if gp > 0 else 0
+            avg, sd, gp, _ = _season_line(weekly_by_player.get(pid), ss)
             floor = min(wk, avg) if gp > 0 else wk
-            return round(wk, 1), round(avg, 1), round(floor, 1), gp
+            return round(wk, 1), avg, sd, round(floor, 1), gp
 
         rosters, league_users, matchups = await asyncio.gather(
             get_rosters(league["league_id"]), get_league_users(league["league_id"]), get_matchups(league["league_id"], week)
@@ -997,10 +997,10 @@ async def get_upgrade_recommendations(req: UserRequest):
             p = players_db.get(pid)
             if not p:
                 continue
-            wk, avg, bl, gp = score(pid)
+            wk, avg, sd, bl, gp = score(pid)
             pool.append({
                 "id": pid, "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team", ""),
-                "week_pts": wk, "ytd_avg": avg, "gp": gp, "blended": bl, "pts": bl,
+                "week_pts": wk, "ytd_avg": avg, "std": sd, "gp": gp, "blended": bl, "pts": bl,
                 "has_played": has_played(pid), "is_starter": pid in starter_set,
             })
 

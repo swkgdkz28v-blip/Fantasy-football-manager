@@ -2448,7 +2448,8 @@ async def get_playoff_odds(req: UserRequest):
             "league_table": [{"team": n, "wins": w, "playoff_pct": p} for p, n, w in others],
         })
 
-    results.sort(key=lambda r: r["playoff_pct"])
+    order = {lg["name"]: i for i, lg in enumerate(leagues)}
+    results.sort(key=lambda r: order.get(r["league"], 10**6))
     return {
         "week": week, "sims": SIMS,
         "summary": {
@@ -2560,7 +2561,10 @@ async def get_weekly_digest(req: UserRequest):
         lg["playoff_pct"] = o["playoff_pct"] if o else None
         lg["record"] = o["record"] if o else None
         out.append(lg)
-    out.sort(key=lambda lg: (LEVEL_RANK.get(lg["urgency"], 4), -lg["action_count"], lg["league"]))
+    # Keep Sleeper's league order (stable across runs) — with ~100 leagues, re-sorting by urgency
+    # makes the list jump around week to week. Items inside a league are still ordered by level.
+    order = {lg["name"]: i for i, lg in enumerate(leagues)}
+    out.sort(key=lambda lg: order.get(lg["league"], 10**6))
 
     return {
         "week": week,

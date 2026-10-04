@@ -533,7 +533,7 @@ function MovesList({ moves, ptsKey = 'pts', subKey, title = '🔄 Moves To Make'
     move:  { bg: 'rgba(92,158,255,0.06)', border: 'rgba(92,158,255,0.3)', color: 'var(--accent4)', icon: '↔' },
     bench: { bg: 'rgba(255,92,92,0.06)',  border: 'rgba(255,92,92,0.3)',  color: 'var(--accent2)', icon: '▼' },
   };
-  const pts = p => `${p[ptsKey] ?? p.pts ?? ''}${subKey && p[subKey] != null ? (p.gp > 0 ? ` · ${p[subKey]} avg (${p.gp} GP)` : ' · 0 GP') : ''}`;
+  const pts = p => `${p[ptsKey] ?? p.pts ?? ''}${subKey && p[subKey] != null ? (p.gp > 0 ? ` · ${p[subKey]} avg (${p.gp} GP)` : ' · 0 GP') : ''}${subKey && p.blended != null && p.gp > 0 ? ` → ${p.blended} floor` : ''}`;
   return e('div', { style: { marginBottom: 12 } },
     e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent3)', marginBottom: 6 } }, title),
     moves.map((m, i) => {
@@ -594,8 +594,8 @@ function OptimalLineupView({ data }) {
     )),
     data.results?.length > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginBottom: 10 } },
       data.weeks_completed > 0
-        ? `Points = 60% week projection + 40% season average per game played (${data.weeks_completed} week${data.weeks_completed === 1 ? '' : 's'} of stats). Players who already played use actual points.`
-        : 'No completed weeks yet — points are week projections only.'),
+        ? `Lineup ranked on week projections (actual points once a player has played). Season average per game played (${data.weeks_completed} week${data.weeks_completed === 1 ? '' : 's'} of stats) shown for reference.`
+        : 'Lineup ranked on week projections. No completed weeks yet, so no season averages.'),
     data.optimal_leagues?.length > 0 && e(Card, { borderColor: 'var(--accent)' },
       e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 8 } }, `✅ Already Optimal (${data.optimal_leagues.length})`),
       data.optimal_leagues.map(l => e('div', { key: l.league, style: { display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid var(--border)', fontSize: 12 } },
@@ -1239,8 +1239,8 @@ function UpgradeRecsView({ data }) {
     )),
     hasUpgrades.length > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginBottom: 10 } },
       data.weeks_completed > 0
-        ? `Shown as week projection · season average per game played (GP). Ranking uses 60% projection + 40% average; players with 0 GP use projection only.`
-        : 'No completed weeks yet — ranking uses week projections only.'),
+        ? `Shown as week projection · season average per game played (GP). Recommendations use the LOWER of the two (conservative floor); players with 0 GP use projection only.`
+        : 'No completed weeks yet — recommendations use week projections only.'),
     optimal.length > 0 && e(Card, { borderColor: 'var(--accent)' },
       e('div', { style: { fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontWeight: 700 } }, `✅ Already Optimal (${optimal.length})`),
       optimal.map(l => e('div', { key: l.league, style: { display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid var(--border)', fontSize: 12 } },
@@ -1553,7 +1553,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.5')
+        e('span', { className: 'app-version' }, 'v10.6')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

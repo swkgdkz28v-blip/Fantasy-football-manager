@@ -21,7 +21,7 @@ async def get_user(username: str) -> dict:
 
 async def get_nfl_state() -> dict:
     cached = get_cached(nfl_state_cache, "state")
-    if cached:
+    if cached is not None:
         return cached
     data = await _get(f"{BASE_URL}/state/nfl")
     return set_cached(nfl_state_cache, "state", data)
@@ -30,7 +30,7 @@ async def get_nfl_state() -> dict:
 
 async def get_players() -> dict:
     cached = get_cached(players_cache, "players")
-    if cached:
+    if cached is not None:
         return cached
     data = await _get(f"{BASE_URL}/players/nfl")
     return set_cached(players_cache, "players", data)
@@ -40,10 +40,13 @@ async def get_players() -> dict:
 async def get_leagues(user_id: str, season: str) -> list:
     key = f"{user_id}/{season}"
     cached = get_cached(leagues_cache, key)
-    if cached:
+    if cached is not None:
         return cached
-    data = await _get(f"{BASE_URL}/user/{user_id}/leagues/nfl/{season}")
-    return set_cached(leagues_cache, key, data or [])
+    try:
+        data = await _get(f"{BASE_URL}/user/{user_id}/leagues/nfl/{season}")
+    except Exception:
+        data = []
+    return set_cached(leagues_cache, key, data if isinstance(data, list) else [])
 
 # ── ROSTERS ───────────────────────────────────────────────────────────────────
 
@@ -80,7 +83,7 @@ async def get_league_users(league_id: str) -> list:
 async def get_matchups(league_id: str, week: int) -> list:
     key = f"{league_id}/{week}"
     cached = get_cached(matchups_cache, key)
-    if cached:
+    if cached is not None:
         return cached
     data = await _get(f"{BASE_URL}/league/{league_id}/matchups/{week}")
     return set_cached(matchups_cache, key, data or [])
@@ -121,7 +124,7 @@ async def get_draft_traded_picks(draft_id: str) -> list:
 async def get_projections(season: str, week: int) -> list:
     key = f"{season}/{week}"
     cached = get_cached(projections_cache, key)
-    if cached:
+    if cached is not None:
         return cached
     try:
         data = await _get(
@@ -137,13 +140,27 @@ async def get_projections(season: str, week: int) -> list:
 async def get_stats(season: str, week: int) -> list:
     key = f"{season}/{week}"
     cached = get_cached(stats_cache, key)
-    if cached:
+    if cached is not None:
         return cached
     try:
         data = await _get(f"{STATS_URL}/{season}/{week}?season_type=regular")
         return set_cached(stats_cache, key, data or [])
     except Exception:
         return []
+
+# ── TRENDING ──────────────────────────────────────────────────────────────────
+
+async def get_trending(kind: str = "add", hours: int = 24, limit: int = 50) -> list:
+    """Sleeper's public trending list: [{player_id, count}]. kind = 'add' | 'drop'."""
+    key = f"{kind}/{hours}/{limit}"
+    cached = get_cached(trending_cache, key)
+    if cached is not None:
+        return cached
+    try:
+        data = await _get(f"{BASE_URL}/players/nfl/trending/{kind}?lookback_hours={hours}&limit={limit}")
+    except Exception:
+        data = []
+    return set_cached(trending_cache, key, data if isinstance(data, list) else [])
 
 # ── TRANSACTIONS ──────────────────────────────────────────────────────────────
 

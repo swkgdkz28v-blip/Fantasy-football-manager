@@ -28,6 +28,9 @@ stats_cache = TTLCache(maxsize=50, ttl=300)
 # Matchups — cache 2 minutes
 matchups_cache = TTLCache(maxsize=200, ttl=120)
 
+# Trending adds/drops — 10 minutes
+trending_cache = TTLCache(maxsize=10, ttl=600)
+
 def get_cached(cache, key):
     with _lock:
         return cache.get(key)

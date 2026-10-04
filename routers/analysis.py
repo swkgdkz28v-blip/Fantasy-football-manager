@@ -722,9 +722,21 @@ async def get_optimal_lineup(req: UserRequest):
     user_id = user["user_id"]
     week = req.week or current_week
 
+    weeks_completed = max(0, min(week - 1, current_week - 1))
+
     proj_array, stats_array = await asyncio.gather(get_projections(season, week), get_stats(season, week))
     stats_map = build_stats_map(stats_array)
     has_played = lambda pid: stats_map.get(str(pid), {}).get("gp", 0) >= 1
+
+    # Season-to-date raw stats, summed per player (gp = games actually played)
+    ytd = {}
+    if weeks_completed > 0:
+        for week_data in await asyncio.gather(*[get_stats(season, w) for w in range(1, weeks_completed + 1)]):
+            for pid, st in build_stats_map(week_data).items():
+                acc = ytd.setdefault(pid, {})
+                for k, v in st.items():
+                    if isinstance(v, (int, float)):
+                        acc[k] = acc.get(k, 0) + v
 
     results, optimal_leagues = [], []
 
@@ -732,6 +744,17 @@ async def get_optimal_lineup(req: UserRequest):
         ss = league.get("scoring_settings") or {}
         proj_map = build_proj_map(proj_array, ss)
         starter_slots = [s for s in league.get("roster_positions", []) if s not in ("BN", "IR", "TAXI")]
+
+        def season_avg(pid):
+            """League-scored season points per game played. Returns (avg, gp)."""
+            raw = ytd.get(pid)
+            if not raw:
+                return 0.0, 0
+            gp = int(raw.get("gp", 0) or 0)
+            if gp <= 0:
+                return 0.0, 0
+            total = sum(ss.get(k, 0) * v for k, v in raw.items())
+            return round(total / gp, 1), gp
 
         rosters, league_users, matchups = await asyncio.gather(
             get_rosters(league["league_id"]), get_league_users(league["league_id"]), get_matchups(league["league_id"], week)
@@ -757,9 +780,17 @@ async def get_optimal_lineup(req: UserRequest):
             if not p:
                 continue
             played = has_played(pid)
+            proj = round(proj_map.get(pid, 0), 1)
+            avg, gp = season_avg(pid)
+            if played:
+                pts = actual_pts.get(pid, 0)          # locked in: real score
+            elif gp > 0:
+                pts = round(proj * 0.6 + avg * 0.4, 1)  # blend projection with per-game average
+            else:
+                pts = proj                            # no games yet: projection only
             pool.append({
                 "id": pid, "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team", "FA"),
-                "pts": actual_pts.get(pid, 0) if played else proj_map.get(pid, 0),
+                "pts": pts, "proj": proj, "avg": avg, "gp": gp,
                 "has_played": played, "injury_status": p.get("injury_status"), "is_starter": pid in starter_set,
             })
 
@@ -784,7 +815,7 @@ async def get_optimal_lineup(req: UserRequest):
                 "locked_count": sum(1 for s in lineup if s["locked"]),
             })
 
-    return {"week": week, "results": results, "optimal_leagues": optimal_leagues}
+    return {"week": week, "weeks_completed": weeks_completed, "results": results, "optimal_leagues": optimal_leagues}
 
 # ── MY POSITION NEEDS ─────────────────────────────────────────────────────────
 
@@ -937,13 +968,13 @@ async def get_upgrade_recommendations(req: UserRequest):
         starter_slots = [s for s in league.get("roster_positions", []) if s not in ("BN", "IR", "TAXI")]
 
         def score(pid):
+            """Returns (week_proj, season_avg_per_game_played, blended, games_played)."""
             wk = proj_map.get(pid, 0)
-            raw = ytd.get(pid)
-            avg = 0
-            if raw and weeks_completed > 0:
-                avg = sum(ss.get(k, 0) * v for k, v in raw.items()) / max(raw.get("gp", weeks_completed), 1)
-            blended = wk * 0.6 + avg * 0.4 if weeks_completed > 0 else wk
-            return round(wk, 1), round(avg, 1), round(blended, 1)
+            raw = ytd.get(pid) or {}
+            gp = int(raw.get("gp", 0) or 0)
+            avg = sum(ss.get(k, 0) * v for k, v in raw.items()) / gp if gp > 0 else 0
+            blended = wk * 0.6 + avg * 0.4 if gp > 0 else wk
+            return round(wk, 1), round(avg, 1), round(blended, 1), gp
 
         rosters, league_users, matchups = await asyncio.gather(
             get_rosters(league["league_id"]), get_league_users(league["league_id"]), get_matchups(league["league_id"], week)
@@ -967,10 +998,10 @@ async def get_upgrade_recommendations(req: UserRequest):
             p = players_db.get(pid)
             if not p:
                 continue
-            wk, avg, bl = score(pid)
+            wk, avg, bl, gp = score(pid)
             pool.append({
                 "id": pid, "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team", ""),
-                "week_pts": wk, "ytd_avg": avg, "blended": bl, "pts": bl,
+                "week_pts": wk, "ytd_avg": avg, "gp": gp, "blended": bl, "pts": bl,
                 "has_played": has_played(pid), "is_starter": pid in starter_set,
             })
 
@@ -989,7 +1020,7 @@ async def get_upgrade_recommendations(req: UserRequest):
             "bench": [p for p in pool if p["id"] not in used][:8],
         })
 
-    return {"week": week, "results": results}
+    return {"week": week, "weeks_completed": weeks_completed, "results": results}
 
 # ── LEAGUE EVALUATION (shared by Overview + Tier Records) ─────────────────────
 

@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
+import math
 from services.sleeper_client import *
 
 router = APIRouter(prefix="/api", tags=["analysis"])
@@ -2123,3 +2124,454 @@ async def get_week_review(req: WeekRequest):
         "grades": {g: sum(1 for r in results if r["grade"] == g) for g in "ABCDF"},
     }
     return {"week": week, "week_done": week_done, "summary": summary, "results": results}
+
+
+# ── WAIVER WATCH ──────────────────────────────────────────────────────────────
+
+def _recent_avg(weekly_pts, n=2):
+    tail = weekly_pts[-n:]
+    return round(sum(tail) / len(tail), 1) if tail else 0.0
+
+
+@router.post("/analysis/waiver-watch")
+async def get_waiver_watch(req: UserRequest):
+    """Free agents whose production (season avg or last-2-week avg, league-scored) beats the
+    weakest starter they could replace. Trend-based, so it catches risers projections lag on."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+    weeks_completed = max(0, min(week - 1, current_week - 1))
+    RELEVANT = {"QB", "RB", "WR", "TE", "K", "DEF"}
+    MIN_GAIN = 1.0
+
+    proj_array, stats_array, weekly_by_player, trending_add, trending_drop = await asyncio.gather(
+        get_projections(season, week), get_stats(season, week),
+        _weekly_stats_by_player(season, weeks_completed),
+        get_trending("add", 24, 100), get_trending("drop", 24, 100),
+    )
+    stats_map = build_stats_map(stats_array)
+    has_played = lambda pid: stats_map.get(str(pid), {}).get("gp", 0) >= 1
+    trend_add = {str(t.get("player_id")): t.get("count", 0) for t in trending_add}
+    trend_drop = {str(t.get("player_id")): t.get("count", 0) for t in trending_drop}
+
+    # Candidate FA universe: relevant position, on an NFL team, and has either a projection or a played game
+    proj_ids = {str(e.get("player_id")) for e in proj_array if e.get("player_id")}
+    candidates = [pid for pid, p in players_db.items()
+                  if p.get("position") in RELEVANT and p.get("team") and (pid in weekly_by_player or pid in proj_ids)]
+
+    results, all_hits = [], []
+    for league in leagues:
+        ss = league.get("scoring_settings") or {}
+        proj_map = build_proj_map(proj_array, ss)
+        starter_slots = [x for x in league.get("roster_positions", []) if x not in ("BN", "IR", "TAXI")]
+        rosters, league_users, matchups = await asyncio.gather(
+            get_rosters(league["league_id"]), get_league_users(league["league_id"]), get_matchups(league["league_id"], week)
+        )
+        my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my_roster:
+            continue
+        my_user = next((u for u in league_users if u["user_id"] == user_id), None)
+        my_team_name = (my_user or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
+        my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
+        starters_ordered = [str(x) for x in ((my_matchup or my_roster).get("starters") or [])]
+        rostered = {str(pid) for r in rosters for pid in (r.get("players") or [])}
+        taxi_ids = {str(t) for t in (my_roster.get("taxi") or [])}
+        ir_ids = {str(t) for t in (my_roster.get("reserve") or [])}
+
+        def line(pid):
+            p = players_db.get(pid) or {}
+            avg, sd, gp, wk_pts = _season_line(weekly_by_player.get(pid), ss)
+            proj = round(proj_map.get(pid, 0), 1)
+            recent = _recent_avg(wk_pts)
+            floor = min(proj, avg) if gp > 0 else proj
+            return {"id": pid, "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team", "FA"),
+                    "injury_status": p.get("injury_status"), "proj": proj, "avg": avg, "std": sd, "gp": gp,
+                    "recent": recent, "floor": round(floor, 1)}
+
+        # Current starters by slot → weakest starter each FA position could replace
+        slot_starters = []
+        for i, slot in enumerate(starter_slots):
+            pid = starters_ordered[i] if i < len(starters_ordered) else "0"
+            slot_starters.append((slot, line(pid) if pid and pid != "0" and pid in players_db else None))
+
+        def weakest_for(pos):
+            opts = [(st["floor"] if st else -1.0, slot, st) for slot, st in slot_starters if pos in SLOT_ELIGIBILITY.get(slot, [slot])]
+            if not opts:
+                return None
+            return min(opts, key=lambda t: t[0])
+
+        bench = [line(str(pid)) for pid in (my_roster.get("players") or [])
+                 if str(pid) not in set(starters_ordered) and str(pid) not in taxi_ids and str(pid) not in ir_ids]
+        bench = [b for b in bench if b["name"]]
+
+        hits = []
+        for pid in candidates:
+            if pid in rostered:
+                continue
+            fa = line(pid)
+            if fa["gp"] < 1 or fa["proj"] <= 0 or has_played(pid):
+                continue
+            if (fa["injury_status"] or "").lower() in ("out", "ir", "pup", "sus"):
+                continue
+            w = weakest_for(fa["position"])
+            if w is None:
+                continue
+            weakest_val, slot, st = w
+            production = max(fa["avg"], fa["recent"])
+            gain = round(production - max(weakest_val, 0), 1)
+            if gain < MIN_GAIN:
+                continue
+            same_pos_bench = [b for b in bench if b["position"] == fa["position"]]
+            drop_pool = same_pos_bench or bench
+            drop = min(drop_pool, key=lambda b: (b["floor"], b["avg"])) if drop_pool else None
+            trend = "rising" if fa["gp"] >= 3 and fa["recent"] >= fa["avg"] * 1.25 else \
+                    "fading" if fa["gp"] >= 3 and fa["recent"] <= fa["avg"] * 0.75 else "steady"
+            hits.append({
+                **fa, "production": round(production, 1), "gain": gain, "trend": trend,
+                "replaces": {"slot": slot, "name": st["name"] if st else None, "floor": round(weakest_val, 1) if st else 0},
+                "drop_candidate": {"name": drop["name"], "position": drop["position"], "floor": drop["floor"], "avg": drop["avg"], "gp": drop["gp"]} if drop else None,
+                "trending_adds": trend_add.get(pid, 0), "trending_drops": trend_drop.get(pid, 0),
+                "under_radar": trend_add.get(pid, 0) == 0,
+            })
+        hits.sort(key=lambda h: -h["gain"])
+        top = hits[:6]
+        for h in top:
+            all_hits.append({**h, "league": league["name"], "team": my_team_name})
+        results.append({
+            "league": league["name"], "team": my_team_name, "candidates": top, "total_candidates": len(hits),
+            "best_gain": top[0]["gain"] if top else 0,
+        })
+
+    results.sort(key=lambda r: -r["best_gain"])
+    all_hits.sort(key=lambda h: -h["gain"])
+    return {
+        "week": week, "weeks_completed": weeks_completed,
+        "summary": {
+            "leagues": len(results),
+            "leagues_with_pickups": sum(1 for r in results if r["candidates"]),
+            "total_candidates": sum(r["total_candidates"] for r in results),
+            "under_radar": sum(1 for h in all_hits if h["under_radar"]),
+            "top": all_hits[:5],
+        },
+        "results": results,
+        "note": "Production = max(season avg, last-2-week avg), league-scored. Gain is vs the weakest starter the player is eligible to replace (using that starter's floor = min(projection, avg)). Players already played, injured OUT, or with no games are excluded.",
+    }
+
+
+# ── PLAYOFF ODDS ──────────────────────────────────────────────────────────────
+
+def _byes_for(spots):
+    """Teams that skip round 1 in a standard single-elimination bracket of `spots` teams."""
+    if spots <= 1:
+        return 0
+    n = 1
+    while n < spots:
+        n *= 2
+    return n - spots
+
+
+def _simulate_league(team_ids, strength, schedule, base_wins, base_pf, playoff_spots, sims, seed, condition=None):
+    """Monte Carlo the rest of the regular season.
+    strength: {rid: (mu, sd)}; schedule: [[(a, b), ...] per remaining week]; base_wins/base_pf: current totals.
+    condition: optional (week_idx, winner_rid, loser_rid) to force one result.
+    Returns {rid: {playoff, bye, wins_hist, exp_wins}}."""
+    import random
+    rng = random.Random(seed)
+    byes = _byes_for(playoff_spots)
+    tally = {rid: {"playoff": 0, "bye": 0, "wins_sum": 0.0, "hist": {}} for rid in team_ids}
+    for _ in range(sims):
+        wins = dict(base_wins)
+        pf = dict(base_pf)
+        for wi, week_games in enumerate(schedule):
+            for a, b in week_games:
+                mu_a, sd_a = strength[a]; mu_b, sd_b = strength[b]
+                sa = rng.gauss(mu_a, sd_a); sb = rng.gauss(mu_b, sd_b)
+                pf[a] += sa; pf[b] += sb
+                if condition and condition[0] == wi and {a, b} == {condition[1], condition[2]}:
+                    winner = condition[1]
+                else:
+                    winner = a if sa >= sb else b
+                wins[winner] = wins.get(winner, 0) + 1
+        order = sorted(team_ids, key=lambda r: (-wins.get(r, 0), -pf.get(r, 0)))
+        for rank, rid in enumerate(order, start=1):
+            t = tally[rid]
+            w = wins.get(rid, 0)
+            t["wins_sum"] += w
+            t["hist"][w] = t["hist"].get(w, 0) + 1
+            if rank <= playoff_spots:
+                t["playoff"] += 1
+            if rank <= byes:
+                t["bye"] += 1
+    out = {}
+    for rid, t in tally.items():
+        out[rid] = {
+            "playoff_pct": round(100 * t["playoff"] / sims, 1),
+            "bye_pct": round(100 * t["bye"] / sims, 1),
+            "exp_wins": round(t["wins_sum"] / sims, 1),
+            "wins_hist": {int(k): round(100 * v / sims, 1) for k, v in sorted(t["hist"].items())},
+        }
+    return out
+
+
+@router.post("/analysis/playoff-odds")
+async def get_playoff_odds(req: UserRequest):
+    """Monte Carlo playoff odds per league using each team's actual scoring mean ± sd and the real remaining schedule."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+    SIMS = 1500
+    proj_array = await get_projections(season, week)
+
+    results = []
+    for league in leagues:
+        ss = league.get("scoring_settings") or {}
+        proj_map = build_proj_map(proj_array, ss)
+        settings = league.get("settings", {})
+        playoff_spots = settings.get("playoff_teams", 6)
+        regular_season_end = max(1, settings.get("playoff_week_start", 15) - 1)
+        if week > regular_season_end:
+            continue
+
+        rosters, league_users = await asyncio.gather(get_rosters(league["league_id"]), get_league_users(league["league_id"]))
+        my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my_roster or len(rosters) < 2:
+            continue
+        user_lookup = {u["user_id"]: u for u in league_users}
+        team_name = lambda r: (user_lookup.get(r.get("owner_id")) or {}).get("metadata", {}).get("team_name") \
+            or (user_lookup.get(r.get("owner_id")) or {}).get("display_name") or f"Team {r['roster_id']}"
+        my_team_name = team_name(my_roster)
+        team_ids = [r["roster_id"] for r in rosters]
+
+        past_weeks = list(range(1, week))
+        future_weeks = list(range(week, regular_season_end + 1))
+        past, future = await asyncio.gather(
+            asyncio.gather(*[get_matchups(league["league_id"], w) for w in past_weeks]),
+            asyncio.gather(*[get_matchups(league["league_id"], w) for w in future_weeks]),
+        )
+
+        # Actual weekly scores per team (completed weeks with real points)
+        scores = {rid: [] for rid in team_ids}
+        for wk_m in past:
+            if not wk_m or all((m.get("points") or 0) == 0 for m in wk_m):
+                continue
+            for m in wk_m:
+                if m.get("roster_id") in scores:
+                    scores[m["roster_id"]].append(float(m.get("points") or 0))
+
+        # Projected starter totals as the prior
+        proj_total = {r["roster_id"]: sum(proj_map.get(str(pid), 0) for pid in (r.get("starters") or []) if pid and pid != "0") for r in rosters}
+        all_scores = [x for v in scores.values() for x in v]
+        league_mu = sum(all_scores) / len(all_scores) if all_scores else (sum(proj_total.values()) / len(proj_total) or 100)
+        if len(all_scores) >= 4:
+            league_sd = (sum((x - league_mu) ** 2 for x in all_scores) / (len(all_scores) - 1)) ** 0.5
+        else:
+            league_sd = league_mu * 0.2
+
+        strength = {}
+        for rid in team_ids:
+            sc = scores[rid]; n = len(sc)
+            prior = proj_total.get(rid) or league_mu
+            if n == 0:
+                mu, sd = prior, league_sd
+            else:
+                act_mu = sum(sc) / n
+                w = min(n / 4.0, 1.0)                       # trust actuals fully after 4 games
+                mu = w * act_mu + (1 - w) * prior
+                sd = (sum((x - act_mu) ** 2 for x in sc) / (n - 1)) ** 0.5 if n >= 3 else league_sd
+                sd = max(sd, league_sd * 0.5)
+            strength[rid] = (mu, sd)
+
+        # Remaining schedule from real matchup ids (skip weeks Sleeper hasn't scheduled yet)
+        schedule = []
+        for wk_m in future:
+            pairs = {}
+            for m in wk_m or []:
+                if m.get("matchup_id") is not None:
+                    pairs.setdefault(m["matchup_id"], []).append(m["roster_id"])
+            games = [(a[0], a[1]) for a in pairs.values() if len(a) == 2]
+            if games:
+                schedule.append(games)
+
+        st_of = lambda r: r.get("settings") or {}
+        base_wins = {r["roster_id"]: st_of(r).get("wins", 0) + 0.5 * st_of(r).get("ties", 0) for r in rosters}
+        base_pf = {r["roster_id"]: st_of(r).get("fpts", 0) + st_of(r).get("fpts_decimal", 0) / 100.0 for r in rosters}
+
+        seed = int(league["league_id"]) % 100000
+        sim = _simulate_league(team_ids, strength, schedule, base_wins, base_pf, playoff_spots, SIMS, seed)
+        me = sim[my_roster["roster_id"]]
+
+        # Swing of the next game: odds if I win it vs if I lose it
+        next_game, swing = None, None
+        if schedule:
+            opp = next((b if a == my_roster["roster_id"] else a for a, b in schedule[0] if my_roster["roster_id"] in (a, b)), None)
+            if opp is not None:
+                opp_r = next(r for r in rosters if r["roster_id"] == opp)
+                if_win = _simulate_league(team_ids, strength, schedule, base_wins, base_pf, playoff_spots, 600, seed + 1,
+                                          condition=(0, my_roster["roster_id"], opp))[my_roster["roster_id"]]["playoff_pct"]
+                if_loss = _simulate_league(team_ids, strength, schedule, base_wins, base_pf, playoff_spots, 600, seed + 2,
+                                           condition=(0, opp, my_roster["roster_id"]))[my_roster["roster_id"]]["playoff_pct"]
+                mu_me, sd_me = strength[my_roster["roster_id"]]; mu_o, sd_o = strength[opp]
+                next_game = {"week": future_weeks[0], "opp_name": team_name(opp_r), "my_mu": round(mu_me, 1), "opp_mu": round(mu_o, 1),
+                             "win_prob": round(100 * 0.5 * (1 + math.erf((mu_me - mu_o) / (((sd_me ** 2 + sd_o ** 2) ** 0.5) * math.sqrt(2)))), 1),
+                             "playoff_if_win": if_win, "playoff_if_loss": if_loss, "swing": round(if_win - if_loss, 1)}
+                swing = next_game["swing"]
+
+        pct = me["playoff_pct"]
+        if pct >= 99.5:
+            status, color, advice = "CLINCHED", "#00e5a0", "Locked in. Rest starters only if the seed is settled; otherwise play for the bye and points-for tiebreakers."
+        elif pct >= 85:
+            status, color, advice = "SAFE", "#00e5a0", "Bank FAAB and picks — spend only on upgrades that matter in the playoffs (bye weeks 15–17, matchups)."
+        elif pct >= 60:
+            status, color, advice = "LIKELY", "#5c9eff", "On track. Fix lineup leaks and make the small waiver upgrades; no need to overpay."
+        elif pct >= 35:
+            status, color, advice = "BUBBLE", "#ffb347", "Every game swings this. Spend FAAB here first and start the higher-ceiling players when you're the underdog."
+        elif pct >= 10:
+            status, color, advice = "LONG SHOT", "#ff8c42", "Need help. Chase upside on waivers; if the next game is lost, shift this league to rebuild mode."
+        elif pct > 0.5:
+            status, color, advice = "FADING", "#ff5c5c", "Mathematically alive only. Stop spending FAAB; move vets for picks before the deadline."
+        else:
+            status, color, advice = "ELIMINATED", "#ff5c5c", "Out of it. Full pivot: sell every aging asset, play the young guys, maximize next year's draft."
+
+        rank_now = sorted(team_ids, key=lambda r: (-base_wins[r], -base_pf[r])).index(my_roster["roster_id"]) + 1
+        others = sorted([(sim[r]["playoff_pct"], team_name(next(x for x in rosters if x["roster_id"] == r)), base_wins[r]) for r in team_ids], key=lambda t: -t[0])
+
+        results.append({
+            "league": league["name"], "team": my_team_name,
+            "record": f"{st_of(my_roster).get('wins', 0)}-{st_of(my_roster).get('losses', 0)}" + (f"-{st_of(my_roster)['ties']}" if st_of(my_roster).get("ties") else ""),
+            "rank": rank_now, "total_teams": len(team_ids), "playoff_spots": playoff_spots, "byes": _byes_for(playoff_spots),
+            "games_left": len(schedule), "games_sampled": len(scores[my_roster["roster_id"]]),
+            "my_mu": round(strength[my_roster["roster_id"]][0], 1), "my_sd": round(strength[my_roster["roster_id"]][1], 1),
+            "league_mu": round(league_mu, 1),
+            "playoff_pct": pct, "bye_pct": me["bye_pct"], "exp_wins": me["exp_wins"], "wins_hist": me["wins_hist"],
+            "status": status, "color": color, "advice": advice,
+            "next_game": next_game,
+            "league_table": [{"team": n, "wins": w, "playoff_pct": p} for p, n, w in others],
+        })
+
+    results.sort(key=lambda r: r["playoff_pct"])
+    return {
+        "week": week, "sims": SIMS,
+        "summary": {
+            "leagues": len(results),
+            "clinched_or_safe": sum(1 for r in results if r["playoff_pct"] >= 85),
+            "bubble": sum(1 for r in results if 10 <= r["playoff_pct"] < 85),
+            "out": sum(1 for r in results if r["playoff_pct"] < 10),
+            "avg_playoff_pct": round(sum(r["playoff_pct"] for r in results) / len(results), 1) if results else 0,
+            "biggest_swing": max(results, key=lambda r: (r["next_game"] or {}).get("swing", -1))["league"] if any(r["next_game"] for r in results) else None,
+        },
+        "results": results,
+        "note": f"{SIMS} simulations per league. Each team scores ~Normal(mean, sd) from its actual weekly points (blended with projections until 4 games), on the real remaining schedule. Ties broken by points-for.",
+    }
+
+
+# ── WEEKLY DIGEST ─────────────────────────────────────────────────────────────
+
+LEVEL_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "INFO": 3}
+
+@router.post("/analysis/weekly-digest")
+async def get_weekly_digest(req: UserRequest):
+    """One Sunday-morning checklist: runs alerts, optimal lineup, waiver watch, playoff odds and
+    the live matchup read, then ranks every league by urgency."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    week = req.week or current_week
+    r = UserRequest(username=req.username, week=week)
+
+    async def safe(name, coro):
+        try:
+            return name, await coro, None
+        except Exception as ex:  # one broken feature must not kill the digest
+            return name, None, f"{type(ex).__name__}: {ex}"
+
+    parts = await asyncio.gather(
+        safe("injured", get_injured_starters(r)),
+        safe("questionable", get_questionable_starters(r)),
+        safe("bye", get_starters_on_bye(r)),
+        safe("open", get_open_starter_spots(r)),
+        safe("zero", get_zero_projection_starters(r)),
+        safe("optimal", get_optimal_lineup(r)),
+        safe("waiver", get_waiver_watch(r)),
+        safe("odds", get_playoff_odds(r)),
+        safe("chance", get_theres_a_chance(r)),
+    )
+    data = {name: d for name, d, _ in parts}
+    errors = [f"{name}: {err}" for name, _, err in parts if err]
+
+    by_league = {}
+    def L(name, team=None):
+        if name not in by_league:
+            by_league[name] = {"league": name, "team": team or "", "items": []}
+        if team and not by_league[name]["team"]:
+            by_league[name]["team"] = team
+        return by_league[name]
+    def add(league, team, level, kind, text, detail=None):
+        L(league, team)["items"].append({"level": level, "type": kind, "text": text, "detail": detail})
+
+    for x in (data.get("open") or {}).get("results", []):
+        add(x["league"], x.get("team"), "CRITICAL", "open_slot", f"{x['open_slots']} empty starter slot{'s' if x['open_slots'] != 1 else ''}")
+    for x in (data.get("injured") or {}).get("results", []):
+        names = ", ".join(f"{p['name']} ({p['status']})" for p in x["injured"])
+        add(x["league"], x.get("team"), "CRITICAL", "injured", f"{len(x['injured'])} OUT/IR starter{'s' if len(x['injured']) != 1 else ''}", names)
+    for x in (data.get("bye") or {}).get("results", []):
+        names = ", ".join(p["name"] for p in x["on_bye"])
+        add(x["league"], x.get("team"), "CRITICAL", "bye", f"{len(x['on_bye'])} starter{'s' if len(x['on_bye']) != 1 else ''} on bye", names)
+    for x in (data.get("zero") or {}).get("results", []):
+        # skip bye / OUT-IR cases already counted above
+        zs = [z for z in x["zero_starters"] if not (z.get("status") or "").lower().startswith("on bye")
+              and not ((z.get("injury_status") or "").lower() in ("out", "ir", "pup", "sus", "na"))]
+        if zs:
+            add(x["league"], x.get("team"), "HIGH", "zero_proj", f"{len(zs)} starter{'s' if len(zs) != 1 else ''} projected for 0", ", ".join(f"{z['name']} — {z.get('status', '')}" for z in zs))
+    for x in (data.get("questionable") or {}).get("results", []):
+        add(x["league"], x.get("team"), "MEDIUM", "questionable", f"{len(x['questionable'])} questionable starter{'s' if len(x['questionable']) != 1 else ''}", ", ".join(p["name"] for p in x["questionable"]))
+    for x in (data.get("optimal") or {}).get("results", []):
+        lvl = "HIGH" if x["gain"] >= 5 else "MEDIUM"
+        mv = "; ".join(f"{m['type'].upper()} {m['player']['name']}" + (f" → {m['to_slot']}" if m.get("to_slot") else "") for m in x["moves"][:4])
+        add(x["league"], x.get("team"), lvl, "lineup", f"Lineup leaves {x['gain']} pts on the bench ({len(x['moves'])} move{'s' if len(x['moves']) != 1 else ''})", mv)
+    for x in (data.get("waiver") or {}).get("results", []):
+        if x["candidates"]:
+            top = x["candidates"][0]
+            lvl = "HIGH" if top["gain"] >= 5 else "MEDIUM"
+            others = ", ".join(c["name"] for c in x["candidates"][1:3])
+            add(x["league"], x.get("team"), lvl, "waiver",
+                f"Waiver: {top['name']} ({top['position']}) +{top['gain']} over {top['replaces'].get('name') or 'empty slot'}",
+                (f"Drop {top['drop_candidate']['name']}. " if top.get("drop_candidate") else "") + (f"Also: {others}" if others else ""))
+    odds_by_league = {x["league"]: x for x in (data.get("odds") or {}).get("results", [])}
+    for name, x in odds_by_league.items():
+        ng = x.get("next_game") or {}
+        if ng and ng.get("swing", 0) >= 20:
+            add(name, x.get("team"), "HIGH", "must_win", f"Must-win vs {ng['opp_name']}: playoff odds {ng['playoff_if_win']}% if win, {ng['playoff_if_loss']}% if loss", f"Win prob {ng['win_prob']}%")
+        add(name, x.get("team"), "INFO", "odds", f"{x['status']} — {x['playoff_pct']}% playoffs, {x['record']} (#{x['rank']}/{x['total_teams']})", x["advice"])
+    for x in (data.get("chance") or {}).get("results", []):
+        if x["status"] in ("THERE'S A CHANCE", "HOLD ON", "LONG SHOT"):
+            add(x["league"], x.get("team"), "INFO", "live", f"Live: {x['status']} — {x['my_live']} vs {x['opp_live']} ({len(x['my_remaining'])} / {len(x['opp_remaining'])} players left)")
+
+    # Make sure every league appears, even with nothing to do
+    for lg in leagues:
+        L(lg["name"])
+    for name, x in odds_by_league.items():
+        L(name, x.get("team"))
+
+    out = []
+    for lg in by_league.values():
+        lg["items"].sort(key=lambda i: LEVEL_RANK[i["level"]])
+        actionable = [i for i in lg["items"] if i["level"] != "INFO"]
+        lg["urgency"] = actionable[0]["level"] if actionable else "CLEAN"
+        lg["action_count"] = len(actionable)
+        o = odds_by_league.get(lg["league"])
+        lg["playoff_pct"] = o["playoff_pct"] if o else None
+        lg["record"] = o["record"] if o else None
+        out.append(lg)
+    out.sort(key=lambda lg: (LEVEL_RANK.get(lg["urgency"], 4), -lg["action_count"], lg["league"]))
+
+    return {
+        "week": week,
+        "summary": {
+            "leagues": len(out),
+            "critical": sum(1 for lg in out if lg["urgency"] == "CRITICAL"),
+            "high": sum(1 for lg in out if lg["urgency"] == "HIGH"),
+            "medium": sum(1 for lg in out if lg["urgency"] == "MEDIUM"),
+            "clean": sum(1 for lg in out if lg["urgency"] == "CLEAN"),
+            "total_actions": sum(lg["action_count"] for lg in out),
+        },
+        "leagues": out,
+        "errors": errors,
+    }

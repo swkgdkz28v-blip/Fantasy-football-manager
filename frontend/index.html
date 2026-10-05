@@ -1458,9 +1458,10 @@ function RootingGuideView({ data }) {
     e('div', { className: 'stat-row' },
       e(StatTile, { value: sm.leagues ?? 0, label: 'Matchups', color: 'var(--text2)' }),
       e(StatTile, { value: sm.players_remaining ?? 0, label: 'Still To Play', color: 'var(--accent3)' }),
-      e(StatTile, { value: sm.players_played ?? 0, label: 'Played', color: 'var(--text3)' }),
-      e(StatTile, { value: sm.unique_players ?? 0, label: 'Unique Players', color: 'var(--accent4)' })
+      e(StatTile, { value: sm.players_live ?? 0, label: 'In Progress', color: 'var(--accent4)' }),
+      e(StatTile, { value: sm.players_played ?? 0, label: 'Final', color: 'var(--text3)' })
     ),
+    sm.have_schedule === false && e(Alert, { type: 'warning' }, e('p', null, 'Live game status unavailable — players whose team has played are shown as "played / in progress".')),
     (sm.biggest_for || sm.biggest_against) && e('div', { className: 'grid-2', style: { gap: 8, marginBottom: 12 } },
       sm.biggest_for && e('div', { style: { padding: '10px 12px', background: 'rgba(0,229,160,0.06)', border: '1px solid rgba(0,229,160,0.3)', borderRadius: 10 } },
         e('div', { style: { fontSize: 10, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: 1 } }, '🙏 Root hardest for'),
@@ -1474,13 +1475,14 @@ function RootingGuideView({ data }) {
     data.teams_remaining?.length > 0 && e(Card, null,
       e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 8 } }, 'Games still to come — where your interest is'),
       e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
-        data.teams_remaining.map(g => e('span', { key: g.team, style: { fontSize: 11, padding: '4px 8px', borderRadius: 6, border: `1px solid ${netColor(g.net)}`, color: 'var(--text2)' } },
-          e('b', null, g.team), ` ${g.for}/${g.against} `, e('span', { style: { color: netColor(g.net), fontWeight: 700 } }, (g.net > 0 ? '+' : '') + g.net)))
+        data.teams_remaining.map(g => e('span', { key: g.team, style: { fontSize: 11, padding: '4px 8px', borderRadius: 6, border: `1px solid ${netColor(g.net)}`, background: g.state === 'live' ? 'rgba(92,158,255,0.10)' : 'transparent', color: 'var(--text2)' } },
+          g.state === 'live' && '🔴 ', e('b', null, g.team), ` ${g.for}/${g.against} `, e('span', { style: { color: netColor(g.net), fontWeight: 700 } }, (g.net > 0 ? '+' : '') + g.net)))
       ),
-      e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 6 } }, 'Team · starters for/against · net')
+      e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 6 } }, 'Team · starters for/against · net · 🔴 = in progress')
     ),
-    section('⏳ Still to play', data.remaining || [], data.remaining_total || 0, 'var(--accent3)', 'Every starter has already played this week.'),
-    section('✅ Already played', data.played || [], data.played_total || 0, 'var(--text3)', 'No games have been played yet.'),
+    section('⏳ Still to play', data.remaining || [], data.remaining_total || 0, 'var(--accent3)', 'Every starter has already kicked off this week.'),
+    (data.live_total > 0 || sm.have_schedule === false) && section(sm.have_schedule === false ? '🔴 Played / in progress' : '🔴 In progress', data.live || [], data.live_total || 0, 'var(--accent4)', 'No games in progress right now.'),
+    sm.have_schedule !== false && section('✅ Final', data.played || [], data.played_total || 0, 'var(--text3)', 'No games have finished yet.'),
     data.on_bye?.length > 0 && section('📅 On bye (started anyway)', data.on_bye, data.on_bye.length, 'var(--accent2)', ''),
     sm.no_matchup?.length > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, `No matchup this week in: ${sm.no_matchup.join(', ')}`),
     data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
@@ -1801,7 +1803,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.11')
+        e('span', { className: 'app-version' }, 'v10.12')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

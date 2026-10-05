@@ -31,6 +31,9 @@ matchups_cache = TTLCache(maxsize=200, ttl=120)
 # Trending adds/drops — 10 minutes
 trending_cache = TTLCache(maxsize=10, ttl=600)
 
+# NFL schedule with live game status — 2 minutes
+schedule_cache = TTLCache(maxsize=4, ttl=120)
+
 def get_cached(cache, key):
     with _lock:
         return cache.get(key)

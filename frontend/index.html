@@ -1433,6 +1433,60 @@ function WeeklyDigestView({ data }) {
   );
 }
 
+// ── ROOTING GUIDE VIEW ────────────────────────────────────────────────────────
+function RootingGuideView({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  const netColor = n => n > 0 ? 'var(--accent)' : n < 0 ? 'var(--accent2)' : 'var(--text3)';
+  const row = (r, i) => e('div', { key: r.id, className: 'player-row', style: { opacity: r.played ? 0.75 : 1 } },
+    e('span', { style: { fontSize: 10, color: 'var(--text3)', minWidth: 20, textAlign: 'right' } }, i + 1),
+    e(PosBadge, { pos: r.position }),
+    e('span', { className: 'player-name' }, r.name),
+    e('span', { className: 'player-team' }, r.team),
+    r.injury_status && !r.played && e(Tag, { color: 'red' }, r.injury_status.toUpperCase()),
+    e('span', { style: { fontSize: 11, color: 'var(--text2)', whiteSpace: 'nowrap' } },
+      e('span', { style: { color: 'var(--accent)' } }, `${r.for} for`), ' · ', e('span', { style: { color: 'var(--accent2)' } }, `${r.against} vs`)),
+    e('span', { className: 'player-pts', style: { color: netColor(r.net), minWidth: 36, textAlign: 'right' } }, (r.net > 0 ? '+' : '') + r.net)
+  );
+  const section = (title, rows, total, color, emptyMsg) => e(Card, { borderColor: color },
+    e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color, marginBottom: 8 } },
+      `${title} (${rows.length}${total > rows.length ? ` of ${total}` : ''})`),
+    rows.length ? rows.map(row) : e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, emptyMsg)
+  );
+  return e('div', null,
+    e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 8 } }, `WEEK ${data.week} ROOTING GUIDE`),
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.leagues ?? 0, label: 'Matchups', color: 'var(--text2)' }),
+      e(StatTile, { value: sm.players_remaining ?? 0, label: 'Still To Play', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.players_played ?? 0, label: 'Played', color: 'var(--text3)' }),
+      e(StatTile, { value: sm.unique_players ?? 0, label: 'Unique Players', color: 'var(--accent4)' })
+    ),
+    (sm.biggest_for || sm.biggest_against) && e('div', { className: 'grid-2', style: { gap: 8, marginBottom: 12 } },
+      sm.biggest_for && e('div', { style: { padding: '10px 12px', background: 'rgba(0,229,160,0.06)', border: '1px solid rgba(0,229,160,0.3)', borderRadius: 10 } },
+        e('div', { style: { fontSize: 10, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: 1 } }, '🙏 Root hardest for'),
+        e('div', { style: { fontSize: 13, fontWeight: 700 } }, `${sm.biggest_for.name} (${sm.biggest_for.position}, ${sm.biggest_for.team})`),
+        e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${sm.biggest_for.for} for · ${sm.biggest_for.against} against · net +${sm.biggest_for.net}`)),
+      sm.biggest_against && e('div', { style: { padding: '10px 12px', background: 'rgba(255,92,92,0.06)', border: '1px solid rgba(255,92,92,0.3)', borderRadius: 10 } },
+        e('div', { style: { fontSize: 10, color: 'var(--accent2)', textTransform: 'uppercase', letterSpacing: 1 } }, '🙅 Root hardest against'),
+        e('div', { style: { fontSize: 13, fontWeight: 700 } }, `${sm.biggest_against.name} (${sm.biggest_against.position}, ${sm.biggest_against.team})`),
+        e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${sm.biggest_against.for} for · ${sm.biggest_against.against} against · net ${sm.biggest_against.net}`))
+    ),
+    data.teams_remaining?.length > 0 && e(Card, null,
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 8 } }, 'Games still to come — where your interest is'),
+      e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
+        data.teams_remaining.map(g => e('span', { key: g.team, style: { fontSize: 11, padding: '4px 8px', borderRadius: 6, border: `1px solid ${netColor(g.net)}`, color: 'var(--text2)' } },
+          e('b', null, g.team), ` ${g.for}/${g.against} `, e('span', { style: { color: netColor(g.net), fontWeight: 700 } }, (g.net > 0 ? '+' : '') + g.net)))
+      ),
+      e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 6 } }, 'Team · starters for/against · net')
+    ),
+    section('⏳ Still to play', data.remaining || [], data.remaining_total || 0, 'var(--accent3)', 'Every starter has already played this week.'),
+    section('✅ Already played', data.played || [], data.played_total || 0, 'var(--text3)', 'No games have been played yet.'),
+    data.on_bye?.length > 0 && section('📅 On bye (started anyway)', data.on_bye, data.on_bye.length, 'var(--accent2)', ''),
+    sm.no_matchup?.length > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, `No matchup this week in: ${sm.no_matchup.join(', ')}`),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
+  );
+}
+
 // ── SEASON FORECAST VIEW ──────────────────────────────────────────────────────
 function SeasonForecastView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
@@ -1563,6 +1617,7 @@ const SECTIONS = [
       { id: 'week-review', label: '📝 Week Review', endpoint: '/analysis/week-review', needsWeek: true },
       { id: 'week-record', label: '🎯 Week Record', endpoint: '/analysis/week-record', needsWeek: true },
       { id: 'theres-a-chance', label: '🎲 There\'s A Chance', endpoint: '/analysis/theres-a-chance' },
+      { id: 'rooting-guide', label: '📣 Rooting Guide', endpoint: '/analysis/rooting-guide' },
     ]
   },
   {
@@ -1732,6 +1787,8 @@ function App() {
         return e(PlayoffOddsView, { data });
       case 'weekly-digest':
         return e(WeeklyDigestView, { data });
+      case 'rooting-guide':
+        return e(RootingGuideView, { data });
       default:
         return e(GenericView, { data, title: feature.label });
     }
@@ -1744,7 +1801,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.10')
+        e('span', { className: 'app-version' }, 'v10.11')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

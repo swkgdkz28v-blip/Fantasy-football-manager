@@ -458,19 +458,55 @@ async def get_week_record(req: WeekRequest):
 
 @router.post("/analysis/theres-a-chance")
 async def get_theres_a_chance(req: UserRequest):
+    """Live matchup read with a real win probability.
+    Each starter is pre-game (full projection ± his season std dev), in progress (banked points +
+    the un-played share of his projection), or final (actual points only). Game state comes from
+    Sleeper's schedule feed; progress of a live game is estimated from team offensive snaps."""
     user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
     user_id = user["user_id"]
     week = req.week or current_week
+    weeks_completed = max(0, min(week - 1, current_week - 1))
+    FULL_GAME_SNAPS = 64.0
+    SKIP_BELOW = 3.0      # win % below which a losing league is pushed to the "ignore" list
 
-    proj_array, stats_array = await asyncio.gather(
-        get_projections(season, week),
-        get_stats(season, week)
+    proj_array, stats_array, schedule, weekly_by_player = await asyncio.gather(
+        get_projections(season, week), get_stats(season, week), get_schedule(season, week),
+        _weekly_stats_by_player(season, weeks_completed),
     )
     stats_map = build_stats_map(stats_array)
-    IGNORE_THRESHOLD = 0.15
-    results = []
-    skipped = []
 
+    team_status = {}
+    for g in schedule:
+        for t in (g.get("home"), g.get("away")):
+            if t:
+                team_status[t] = (g.get("status") or "").lower()
+    have_schedule = bool(team_status)
+    teams_played = {(players_db.get(pid) or {}).get("team") for pid, st in stats_map.items() if (st.get("gp") or 0) >= 1}
+
+    def game_state(pid, p):
+        st = team_status.get(p.get("team"))
+        if st in ("complete", "final", "post_game"):
+            return "final"
+        if st in ("in_game", "in_progress", "live", "halftime"):
+            return "live"
+        if st in ("pre_game", "scheduled"):
+            return "pre"
+        if (stats_map.get(pid, {}).get("gp") or 0) >= 1 or p.get("team") in teams_played:
+            return "final" if have_schedule else "live"
+        return "pre"
+
+    def game_progress(pid, p):
+        """0..1 share of a live game already played, from team offensive snaps (0.5 if unknown)."""
+        st = stats_map.get(pid) or {}
+        snaps = st.get("tm_off_snp") or st.get("tm_def_snp") or 0
+        if not snaps:
+            # borrow any teammate's team-snap count
+            for q, qs in stats_map.items():
+                if (players_db.get(q) or {}).get("team") == p.get("team") and (qs.get("tm_off_snp") or 0) > 0:
+                    snaps = qs["tm_off_snp"]; break
+        return min(max(snaps / FULL_GAME_SNAPS, 0.05), 0.97) if snaps else 0.5
+
+    results, skipped, finished = [], [], []
     for league in leagues:
         if league.get("status") == "complete":
             continue
@@ -478,18 +514,15 @@ async def get_theres_a_chance(req: UserRequest):
         proj_map = build_proj_map(proj_array, ss)
 
         rosters, league_users, matchups = await asyncio.gather(
-            get_rosters(league["league_id"]),
-            get_league_users(league["league_id"]),
-            get_matchups(league["league_id"], week)
+            get_rosters(league["league_id"]), get_league_users(league["league_id"]), get_matchups(league["league_id"], week)
         )
-
         my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
         if not my_roster:
             continue
         my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
-        if not my_matchup:
+        if not my_matchup or my_matchup.get("matchup_id") is None:
             continue
-        opp_matchup = next((m for m in matchups if m["matchup_id"] == my_matchup["matchup_id"] and m["roster_id"] != my_roster["roster_id"]), None)
+        opp_matchup = next((m for m in matchups if m.get("matchup_id") == my_matchup["matchup_id"] and m["roster_id"] != my_roster["roster_id"]), None)
         if not opp_matchup:
             continue
 
@@ -498,85 +531,107 @@ async def get_theres_a_chance(req: UserRequest):
         opp_roster = roster_lookup.get(opp_matchup["roster_id"])
         opp_user = user_lookup.get(opp_roster["owner_id"]) if opp_roster else None
         opp_name = (opp_user or {}).get("metadata", {}).get("team_name") or (opp_user or {}).get("display_name", "Opponent")
-
-        my_live = my_matchup.get("points", 0)
-        opp_live = opp_matchup.get("points", 0)
-        my_player_pts = my_matchup.get("players_points") or {}
-        opp_player_pts = opp_matchup.get("players_points") or {}
-
-        def get_remaining(starters, player_pts):
-            remaining = []
-            for pid in starters:
-                if not pid or pid == "0":
-                    continue
-                s = stats_map.get(str(pid)) or {}
-                if s.get("gp", 0) >= 1:
-                    continue  # already played
-                p = players_db.get(str(pid)) or {}
-                remaining.append({
-                    "id": pid,
-                    "name": player_name(p),
-                    "position": p.get("position", "UNK"),
-                    "team": p.get("team", ""),
-                    "proj_pts": proj_map.get(str(pid), 0),
-                })
-            return remaining
-
-        my_remaining = get_remaining(my_matchup.get("starters", []), my_player_pts)
-        opp_remaining = get_remaining(opp_matchup.get("starters", []), opp_player_pts)
-
-        my_remaining_proj = sum(p["proj_pts"] for p in my_remaining)
-        opp_remaining_proj = sum(p["proj_pts"] for p in opp_remaining)
-        my_max = round(my_live + my_remaining_proj, 2)
-        opp_max = round(opp_live + opp_remaining_proj, 2)
-
-        currently_winning = my_live >= opp_live
-        if not currently_winning and opp_max > 0:
-            deficit_pct = (opp_max - my_max) / opp_max
-            if my_max < opp_max * (1 - IGNORE_THRESHOLD):
-                _mu = user_lookup.get(user_id)
-                skipped.append({"league": league["name"], "team": (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", ""),
-                                "opp_name": opp_name, "my_live": my_live, "opp_live": opp_live, "my_max": my_max, "opp_max": opp_max})
-                continue
-
-        can_win_math = my_max > opp_live
-        can_win_realistic = my_max > opp_max
-        lead = my_live - opp_live
-
-        if currently_winning and len(my_remaining) == 0 and len(opp_remaining) == 0:
-            status = "WON"
-        elif currently_winning and my_max > opp_max:
-            status = "WINNING"
-        elif currently_winning and my_max <= opp_max:
-            status = "HOLD ON"
-        elif not can_win_math:
-            status = "ELIMINATED"
-        elif can_win_realistic:
-            status = "THERE'S A CHANCE"
-        else:
-            status = "LONG SHOT"
-
         _mu = user_lookup.get(user_id)
         my_team_name = (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
-        results.append({
-            "league": league["name"],
-            "team": my_team_name,
-            "opp_name": opp_name,
-            "my_live": my_live,
-            "opp_live": opp_live,
-            "my_max": my_max,
-            "opp_max": opp_max,
-            "my_remaining": my_remaining,
-            "opp_remaining": opp_remaining,
-            "my_remaining_proj": round(my_remaining_proj, 1),
-            "opp_remaining_proj": round(opp_remaining_proj, 1),
-            "status": status,
-            "lead": round(lead, 2),
-        })
 
-    status_order = {"WON": 0, "WINNING": 1, "HOLD ON": 2, "THERE'S A CHANCE": 3, "LONG SHOT": 4, "ELIMINATED": 5}
-    results.sort(key=lambda r: status_order.get(r["status"], 9))
-    return {"results": results, "skipped": skipped}
+        def side(matchup):
+            pts_map = matchup.get("players_points") or {}
+            banked, exp_rem, var, pre, live, done = 0.0, 0.0, 0.0, [], [], 0
+            for pid in (matchup.get("starters") or []):
+                pid = str(pid)
+                if not pid or pid == "0":
+                    continue
+                p = players_db.get(pid) or {}
+                actual = float(pts_map.get(pid, 0) or 0)
+                proj = proj_map.get(pid, 0)
+                avg, sd, gp, _ = _season_line(weekly_by_player.get(pid), ss)
+                sd = sd if (sd is not None and gp >= 2) else max(0.45 * proj, 2.0)
+                state = game_state(pid, p)
+                row = {"id": pid, "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team", ""),
+                       "proj_pts": round(proj, 1), "actual": round(actual, 2), "state": state}
+                if state == "final":
+                    banked += actual; done += 1
+                elif state == "pre":
+                    exp_rem += proj; var += sd ** 2; pre.append(row)
+                else:
+                    frac = game_progress(pid, p)
+                    rem = max(proj * (1 - frac), 0.0)
+                    banked += actual; exp_rem += rem; var += (sd * (1 - frac) ** 0.5) ** 2
+                    row.update({"progress": round(frac * 100), "remaining_proj": round(rem, 1)})
+                    live.append(row)
+            return {"banked": round(banked, 2), "exp_remaining": round(exp_rem, 1), "expected": round(banked + exp_rem, 1),
+                    "sd": round(var ** 0.5, 1), "pre": pre, "live": live, "done": done}
+
+        me, opp = side(my_matchup), side(opp_matchup)
+        my_live_pts = float(my_matchup.get("points") or 0)
+        opp_live_pts = float(opp_matchup.get("points") or 0)
+        # Sleeper's matchup.points is authoritative for banked totals; use it when it has data
+        if my_live_pts > 0 or opp_live_pts > 0:
+            me["expected"] = round(my_live_pts + me["exp_remaining"], 1); me["banked"] = round(my_live_pts, 2)
+            opp["expected"] = round(opp_live_pts + opp["exp_remaining"], 1); opp["banked"] = round(opp_live_pts, 2)
+
+        diff = me["expected"] - opp["expected"]
+        tot_sd = (me["sd"] ** 2 + opp["sd"] ** 2) ** 0.5
+        all_done = not me["pre"] and not me["live"] and not opp["pre"] and not opp["live"]
+        if all_done or tot_sd < 1e-6:
+            win_prob = 100.0 if diff > 0 else 0.0 if diff < 0 else 50.0
+        else:
+            win_prob = round(100 * 0.5 * (1 + math.erf(diff / (tot_sd * math.sqrt(2)))), 1)
+
+        if all_done:
+            status = "WON" if diff > 0 else "LOST" if diff < 0 else "TIED"
+        elif win_prob >= 95:   status = "LOCKED IN"
+        elif win_prob >= 70:   status = "WINNING"
+        elif win_prob >= 45:   status = "COIN FLIP"
+        elif win_prob >= 25:   status = "THERE'S A CHANCE"
+        elif win_prob >= 8:    status = "LONG SHOT"
+        else:                  status = "ELIMINATED"
+
+        # what has to happen: points per remaining player needed to pull even
+        my_left = len(me["pre"]) + len(me["live"]); opp_left = len(opp["pre"]) + len(opp["live"])
+        need = None
+        if diff < 0 and my_left > 0:
+            need = round((opp["expected"] - me["banked"]) / my_left, 1)
+
+        entry = {
+            "league": league["name"], "team": my_team_name, "opp_name": opp_name,
+            "status": status, "win_prob": win_prob,
+            "my_live": me["banked"], "opp_live": opp["banked"],
+            "my_exp": me["expected"], "opp_exp": opp["expected"],
+            "my_remaining_proj": me["exp_remaining"], "opp_remaining_proj": opp["exp_remaining"],
+            "my_sd": me["sd"], "opp_sd": opp["sd"],
+            "my_remaining": me["pre"], "opp_remaining": opp["pre"],
+            "my_in_progress": me["live"], "opp_in_progress": opp["live"],
+            "my_left": my_left, "opp_left": opp_left,
+            "lead": round(me["banked"] - opp["banked"], 2), "exp_margin": round(diff, 1),
+            "need_per_player": need,
+            # legacy keys some views/digest still read
+            "my_max": me["expected"], "opp_max": opp["expected"],
+        }
+        if all_done:
+            finished.append(entry)
+        elif status == "ELIMINATED" and win_prob < SKIP_BELOW:
+            skipped.append(entry)
+        else:
+            results.append(entry)
+
+    # Closest games first — that's where attention goes
+    results.sort(key=lambda r: abs(r["win_prob"] - 50))
+    skipped.sort(key=lambda r: -r["win_prob"])
+    finished.sort(key=lambda r: (r["status"] != "WON", r["league"]))
+    return {
+        "week": week, "have_schedule": have_schedule,
+        "summary": {
+            "in_play": len(results), "finished": len(finished), "ignored": len(skipped),
+            "won": sum(1 for r in finished if r["status"] == "WON"), "lost": sum(1 for r in finished if r["status"] == "LOST"),
+            "favored": sum(1 for r in results if r["win_prob"] >= 50), "underdog": sum(1 for r in results if r["win_prob"] < 50),
+            "expected_wins": round(sum(r["win_prob"] for r in results) / 100 + sum(1 for r in finished if r["status"] == "WON"), 1),
+        },
+        "results": results, "skipped": skipped, "finished": finished,
+        "note": "Win % = chance your final beats theirs: banked points + remaining projection per player, with each player's "
+                "season std dev as uncertainty. In-progress players keep the un-played share of their projection "
+                "(estimated from team snaps). Leagues under 3% are listed as ignorable; finished matchups are at the bottom.",
+    }
 
 
 # ── SHARED LINEUP HELPER ──────────────────────────────────────────────────────
@@ -2542,8 +2597,8 @@ async def get_weekly_digest(req: UserRequest):
             add(name, x.get("team"), "HIGH", "must_win", f"Must-win vs {ng['opp_name']}: playoff odds {ng['playoff_if_win']}% if win, {ng['playoff_if_loss']}% if loss", f"Win prob {ng['win_prob']}%")
         add(name, x.get("team"), "INFO", "odds", f"{x['status']} — {x['playoff_pct']}% playoffs, {x['record']} (#{x['rank']}/{x['total_teams']})", x["advice"])
     for x in (data.get("chance") or {}).get("results", []):
-        if x["status"] in ("THERE'S A CHANCE", "HOLD ON", "LONG SHOT"):
-            add(x["league"], x.get("team"), "INFO", "live", f"Live: {x['status']} — {x['my_live']} vs {x['opp_live']} ({len(x['my_remaining'])} / {len(x['opp_remaining'])} players left)")
+        if x["status"] in ("COIN FLIP", "THERE'S A CHANCE", "LONG SHOT"):
+            add(x["league"], x.get("team"), "INFO", "live", f"Live: {x['status']} ({x['win_prob']}%) — {x['my_live']} vs {x['opp_live']} ({x['my_left']} / {x['opp_left']} players left)")
 
     # Make sure every league appears, even with nothing to do
     for lg in leagues:

@@ -2592,16 +2592,35 @@ async def get_rooting_guide(req: UserRequest):
     week = req.week or current_week
     TOP = 50
 
-    stats_array = await get_stats(season, week)
+    stats_array, schedule = await asyncio.gather(get_stats(season, week), get_schedule(season, week))
     stats_map = build_stats_map(stats_array)
-    # A team has played if any of its players has gp >= 1 this week
+    # A team has played if any of its players has gp >= 1 this week (fallback when the schedule feed is down)
     teams_played = {(players_db.get(pid) or {}).get("team") for pid, st in stats_map.items() if (st.get("gp") or 0) >= 1}
     teams_played.discard(None)
 
-    def played(pid, p):
-        if (stats_map.get(pid, {}).get("gp") or 0) >= 1:
-            return True
-        return p.get("team") in teams_played
+    # Live game status per NFL team from Sleeper's schedule feed
+    team_status = {}
+    for g in schedule:
+        st = (g.get("status") or "").lower()
+        for t in (g.get("home"), g.get("away")):
+            if t:
+                team_status[t] = st
+    have_schedule = bool(team_status)
+
+    def game_state(pid, p):
+        """'pre' | 'live' | 'final'"""
+        team = p.get("team")
+        st = team_status.get(team)
+        if st in ("complete", "final", "post_game"):
+            return "final"
+        if st in ("in_game", "in_progress", "live", "halftime"):
+            return "live"
+        if st in ("pre_game", "scheduled"):
+            return "pre"
+        # No schedule info: fall back to whether anyone on the team has a game played
+        if (stats_map.get(pid, {}).get("gp") or 0) >= 1 or team in teams_played:
+            return "final" if have_schedule else "live"   # without the feed we can't tell live from final
+        return "pre"
 
     tally = {}  # pid -> {"for": n, "against": n, "for_leagues": [], "against_leagues": []}
     def bump(pid, side, league_name):
@@ -2638,23 +2657,25 @@ async def get_rooting_guide(req: UserRequest):
         rows.append({
             "id": pid, "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team") or "FA",
             "for": t["for"], "against": t["against"], "net": net, "total": t["for"] + t["against"],
-            "played": played(pid, p),
+            "state": game_state(pid, p),
+            "played": game_state(pid, p) != "pre",
             "bye": bool(p.get("bye_week")) and int(p.get("bye_week")) == week,
             "injury_status": p.get("injury_status"),
             "for_leagues": t["for_leagues"], "against_leagues": t["against_leagues"],
         })
 
     key = lambda r: (-abs(r["net"]), -r["total"], r["name"])
-    remaining = sorted([r for r in rows if not r["played"] and not r["bye"]], key=key)
-    done = sorted([r for r in rows if r["played"]], key=key)
-    on_bye = sorted([r for r in rows if r["bye"] and not r["played"]], key=key)
+    remaining = sorted([r for r in rows if r["state"] == "pre" and not r["bye"]], key=key)
+    live = sorted([r for r in rows if r["state"] == "live"], key=key)
+    done = sorted([r for r in rows if r["state"] == "final"], key=key)
+    on_bye = sorted([r for r in rows if r["bye"] and r["state"] == "pre"], key=key)
 
     # Game-level rollup for the games still to come: which NFL teams carry the most rooting interest
     by_team = {}
-    for r in remaining:
-        g = by_team.setdefault(r["team"], {"team": r["team"], "for": 0, "against": 0, "players": 0})
+    for r in remaining + live:
+        g = by_team.setdefault(r["team"], {"team": r["team"], "for": 0, "against": 0, "players": 0, "state": r["state"]})
         g["for"] += r["for"]; g["against"] += r["against"]; g["players"] += 1
-    games = sorted(by_team.values(), key=lambda g: -(g["for"] + g["against"]))
+    games = sorted(by_team.values(), key=lambda g: (0 if g["state"] == "live" else 1, -(g["for"] + g["against"])))
     for g in games:
         g["net"] = g["for"] - g["against"]
 
@@ -2662,15 +2683,17 @@ async def get_rooting_guide(req: UserRequest):
         "week": week,
         "summary": {
             "leagues": leagues_counted, "no_matchup": no_matchup,
-            "players_remaining": len(remaining), "players_played": len(done), "players_on_bye": len(on_bye),
+            "players_remaining": len(remaining), "players_live": len(live), "players_played": len(done), "players_on_bye": len(on_bye),
+            "have_schedule": have_schedule,
             "unique_players": len(rows),
             "biggest_for": remaining[0] if remaining and remaining[0]["net"] > 0 else next((r for r in remaining if r["net"] > 0), None),
             "biggest_against": next((r for r in remaining if r["net"] < 0), None),
         },
         "remaining": remaining[:TOP], "remaining_total": len(remaining),
+        "live": live[:TOP], "live_total": len(live),
         "played": done[:TOP], "played_total": len(done),
         "on_bye": on_bye[:TOP],
         "teams_remaining": games,
         "note": "Counts starters only (your lineup = FOR, opponent's lineup = AGAINST). Net = FOR − AGAINST; sorted by |net|. "
-                "A player is 'played' once he has a game played this week or his NFL team has already played.",
+                "Game state comes from Sleeper's live schedule feed (pre-game / in progress / final).",
     }

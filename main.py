@@ -7,7 +7,7 @@ import os
 
 from routers.analysis import router as analysis_router
 
-app = FastAPI(title="Fantasy Football Manager", version="10.10")
+app = FastAPI(title="Fantasy Football Manager", version="10.11")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,7 +20,7 @@ app.include_router(analysis_router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "10.10"}
+    return {"status": "ok", "version": "10.11"}
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():

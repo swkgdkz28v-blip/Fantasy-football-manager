@@ -148,6 +148,22 @@ async def get_stats(season: str, week: int) -> list:
     except Exception:
         return []
 
+# ── NFL SCHEDULE / GAME STATUS ───────────────────────────────────────────────
+
+async def get_schedule(season: str, week: int) -> list:
+    """Games for one week: [{week, home, away, status, date, game_id}].
+    status is 'pre_game' | 'in_game' | 'complete'. Empty list if the feed is unavailable."""
+    key = f"{season}"
+    cached = get_cached(schedule_cache, key)
+    if cached is None:
+        try:
+            data = await _get(f"https://api.sleeper.app/schedule/nfl/regular/{season}")
+            cached = data if isinstance(data, list) else []
+        except Exception:
+            cached = []
+        set_cached(schedule_cache, key, cached)
+    return [g for g in cached if str(g.get("week")) == str(week)]
+
 # ── TRENDING ──────────────────────────────────────────────────────────────────
 
 async def get_trending(kind: str = "add", hours: int = 24, limit: int = 50) -> list:

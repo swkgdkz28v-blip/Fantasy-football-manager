@@ -2579,3 +2579,98 @@ async def get_weekly_digest(req: UserRequest):
         "leagues": out,
         "errors": errors,
     }
+
+
+# ── ROOTING GUIDE (FOR / AGAINST COUNTS) ──────────────────────────────────────
+
+@router.post("/analysis/rooting-guide")
+async def get_rooting_guide(req: UserRequest):
+    """How many times each player starts FOR the user vs AGAINST the user (opponents' starters)
+    across every league this week. Players still to play are listed first, then those already played."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+    TOP = 50
+
+    stats_array = await get_stats(season, week)
+    stats_map = build_stats_map(stats_array)
+    # A team has played if any of its players has gp >= 1 this week
+    teams_played = {(players_db.get(pid) or {}).get("team") for pid, st in stats_map.items() if (st.get("gp") or 0) >= 1}
+    teams_played.discard(None)
+
+    def played(pid, p):
+        if (stats_map.get(pid, {}).get("gp") or 0) >= 1:
+            return True
+        return p.get("team") in teams_played
+
+    tally = {}  # pid -> {"for": n, "against": n, "for_leagues": [], "against_leagues": []}
+    def bump(pid, side, league_name):
+        t = tally.setdefault(pid, {"for": 0, "against": 0, "for_leagues": [], "against_leagues": []})
+        t[side] += 1
+        t[side + "_leagues"].append(league_name)
+
+    leagues_counted, no_matchup = 0, []
+    all_rosters = await asyncio.gather(*[get_rosters(lg["league_id"]) for lg in leagues])
+    all_matchups = await asyncio.gather(*[get_matchups(lg["league_id"], week) for lg in leagues])
+    for league, rosters, matchups in zip(leagues, all_rosters, all_matchups):
+        my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my_roster:
+            continue
+        my_m = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
+        if not my_m or my_m.get("matchup_id") is None:
+            no_matchup.append(league["name"])
+            continue
+        opp_m = next((m for m in matchups if m.get("matchup_id") == my_m["matchup_id"] and m["roster_id"] != my_roster["roster_id"]), None)
+        leagues_counted += 1
+        for pid in (my_m.get("starters") or []):
+            if pid and str(pid) != "0":
+                bump(str(pid), "for", league["name"])
+        for pid in ((opp_m or {}).get("starters") or []):
+            if pid and str(pid) != "0":
+                bump(str(pid), "against", league["name"])
+
+    rows = []
+    for pid, t in tally.items():
+        p = players_db.get(pid)
+        if not p:
+            continue
+        net = t["for"] - t["against"]
+        rows.append({
+            "id": pid, "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team") or "FA",
+            "for": t["for"], "against": t["against"], "net": net, "total": t["for"] + t["against"],
+            "played": played(pid, p),
+            "bye": bool(p.get("bye_week")) and int(p.get("bye_week")) == week,
+            "injury_status": p.get("injury_status"),
+            "for_leagues": t["for_leagues"], "against_leagues": t["against_leagues"],
+        })
+
+    key = lambda r: (-abs(r["net"]), -r["total"], r["name"])
+    remaining = sorted([r for r in rows if not r["played"] and not r["bye"]], key=key)
+    done = sorted([r for r in rows if r["played"]], key=key)
+    on_bye = sorted([r for r in rows if r["bye"] and not r["played"]], key=key)
+
+    # Game-level rollup for the games still to come: which NFL teams carry the most rooting interest
+    by_team = {}
+    for r in remaining:
+        g = by_team.setdefault(r["team"], {"team": r["team"], "for": 0, "against": 0, "players": 0})
+        g["for"] += r["for"]; g["against"] += r["against"]; g["players"] += 1
+    games = sorted(by_team.values(), key=lambda g: -(g["for"] + g["against"]))
+    for g in games:
+        g["net"] = g["for"] - g["against"]
+
+    return {
+        "week": week,
+        "summary": {
+            "leagues": leagues_counted, "no_matchup": no_matchup,
+            "players_remaining": len(remaining), "players_played": len(done), "players_on_bye": len(on_bye),
+            "unique_players": len(rows),
+            "biggest_for": remaining[0] if remaining and remaining[0]["net"] > 0 else next((r for r in remaining if r["net"] > 0), None),
+            "biggest_against": next((r for r in remaining if r["net"] < 0), None),
+        },
+        "remaining": remaining[:TOP], "remaining_total": len(remaining),
+        "played": done[:TOP], "played_total": len(done),
+        "on_bye": on_bye[:TOP],
+        "teams_remaining": games,
+        "note": "Counts starters only (your lineup = FOR, opponent's lineup = AGAINST). Net = FOR − AGAINST; sorted by |net|. "
+                "A player is 'played' once he has a game played this week or his NFL team has already played.",
+    }

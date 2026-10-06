@@ -1498,6 +1498,52 @@ function RootingGuideView({ data }) {
   );
 }
 
+// ── SEASON RECORDS VIEW ───────────────────────────────────────────────────────
+function SeasonRecordsView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No leagues found.'));
+  const sm = data.summary || {};
+  const [sortKey, setSortKey] = useState('league');
+  const [desc, setDesc] = useState(false);
+  const cols = [
+    ['league', 'League', 'left'], ['record', 'Rec', 'right'], ['pf', 'PF', 'right'], ['pa', 'PA', 'right'], ['max_pf', 'Max PF', 'right'], ['efficiency', 'Eff%', 'right'],
+  ];
+  const rows = [...data.results];
+  if (sortKey !== 'league') {
+    const k = sortKey === 'record' ? 'win_pct' : sortKey;
+    rows.sort((a, b) => ((b[k] ?? -1) - (a[k] ?? -1)) * (desc ? -1 : 1) || a.league.localeCompare(b.league));
+  } else if (desc) rows.reverse();
+  const click = k => { if (sortKey === k) setDesc(!desc); else { setSortKey(k); setDesc(false); } };
+  const effColor = v => v == null ? 'var(--text3)' : v >= 90 ? 'var(--accent)' : v >= 80 ? 'var(--accent3)' : 'var(--accent2)';
+  const recColor = p => p > 0.5 ? 'var(--accent)' : p < 0.5 ? 'var(--accent2)' : 'var(--text2)';
+  const th = ([k, label, align]) => e('th', { key: k, onClick: () => click(k), style: { textAlign: align, fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: sortKey === k ? 'var(--accent)' : 'var(--text3)', padding: '6px 4px', cursor: 'pointer', whiteSpace: 'nowrap', borderBottom: '1px solid var(--border)' } }, label, sortKey === k ? (desc ? ' ▼' : ' ▲') : '');
+  const td = (c, align, extra) => e('td', { style: { textAlign: align, padding: '6px 4px', fontSize: 11, borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap', ...extra } }, c);
+  return e('div', null,
+    e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 8 } }, `${data.season} SEASON RECORDS · THROUGH WEEK ${Math.max((data.week || 1) - 1, 0)}`),
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.record, label: `Overall (${sm.leagues})`, color: recColor(sm.win_pct) }),
+      e(StatTile, { value: sm.pf?.toLocaleString(), label: 'Points For', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.pa?.toLocaleString(), label: 'Points Against', color: 'var(--accent2)' }),
+      e(StatTile, { value: sm.avg_efficiency != null ? `${sm.avg_efficiency}%` : '—', label: 'Avg Efficiency', color: effColor(sm.avg_efficiency) })
+    ),
+    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 10 } }, 'Tap a column header to sort. Eff% = PF ÷ Max PF (points a perfect lineup would have scored).',
+      sm.worst_eff ? e('span', null, ` Lowest efficiency: `, e('b', null, sm.worst_eff), '.') : null),
+    e('div', { style: { overflowX: 'auto', WebkitOverflowScrolling: 'touch' } },
+      e('table', { style: { width: '100%', borderCollapse: 'collapse' } },
+        e('thead', null, e('tr', null, cols.map(th))),
+        e('tbody', null, rows.map(r => e('tr', { key: r.league },
+          td(e('div', null, e('div', { style: { fontWeight: 700, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' } }, r.league), e('div', { style: { fontSize: 10, color: 'var(--text3)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' } }, `${r.team}${r.rank ? ` · #${r.rank}/${r.total_teams}` : ''}`)), 'left', { whiteSpace: 'normal' }),
+          td(r.record, 'right', { fontWeight: 700, color: recColor(r.win_pct) }),
+          td(r.pf.toFixed(1), 'right'),
+          td(r.pa.toFixed(1), 'right'),
+          td(r.max_pf.toFixed(1), 'right', { color: 'var(--text2)' }),
+          td(r.efficiency != null ? `${r.efficiency}%` : '—', 'right', { fontWeight: 700, color: effColor(r.efficiency) })
+        )))
+      )
+    ),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
+  );
+}
+
 // ── SEASON FORECAST VIEW ──────────────────────────────────────────────────────
 function SeasonForecastView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
@@ -1629,6 +1675,7 @@ const SECTIONS = [
       { id: 'week-record', label: '🎯 Week Record', endpoint: '/analysis/week-record', needsWeek: true },
       { id: 'theres-a-chance', label: '🎲 There\'s A Chance', endpoint: '/analysis/theres-a-chance' },
       { id: 'rooting-guide', label: '📣 Rooting Guide', endpoint: '/analysis/rooting-guide' },
+      { id: 'season-records', label: '📒 Season Records', endpoint: '/analysis/season-records' },
     ]
   },
   {
@@ -1800,6 +1847,8 @@ function App() {
         return e(WeeklyDigestView, { data });
       case 'rooting-guide':
         return e(RootingGuideView, { data });
+      case 'season-records':
+        return e(SeasonRecordsView, { data });
       default:
         return e(GenericView, { data, title: feature.label });
     }
@@ -1812,7 +1861,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.13')
+        e('span', { className: 'app-version' }, 'v10.14')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

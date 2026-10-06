@@ -2752,3 +2752,66 @@ async def get_rooting_guide(req: UserRequest):
         "note": "Counts starters only (your lineup = FOR, opponent's lineup = AGAINST). Net = FOR − AGAINST; sorted by |net|. "
                 "Game state comes from Sleeper's live schedule feed (pre-game / in progress / final).",
     }
+
+
+# ── SEASON RECORDS (record / PF / PA / max PF per league) ─────────────────────
+
+def _fpts(st, key):
+    return round((st.get(key) or 0) + (st.get(key + "_decimal") or 0) / 100.0, 2)
+
+
+@router.post("/analysis/season-records")
+async def get_season_records(req: UserRequest):
+    """One row per league: the user's team name, record, season points for, points against and
+    max points for (Sleeper's 'ppts' = points with a perfect lineup every week)."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+
+    all_rosters, all_users = await asyncio.gather(
+        asyncio.gather(*[get_rosters(lg["league_id"]) for lg in leagues]),
+        asyncio.gather(*[get_league_users(lg["league_id"]) for lg in leagues]),
+    )
+    rows = []
+    for league, rosters, league_users in zip(leagues, all_rosters, all_users):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        st = my.get("settings") or {}
+        mu = next((u for u in league_users if u["user_id"] == user_id), None)
+        team = (mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
+        w, l, t = st.get("wins", 0), st.get("losses", 0), st.get("ties", 0)
+        gp = w + l + t
+        pf, pa, maxpf = _fpts(st, "fpts"), _fpts(st, "fpts_against"), _fpts(st, "ppts")
+        # rank in league by wins then PF (Sleeper's default standings)
+        order = sorted(rosters, key=lambda r: (-(r.get("settings") or {}).get("wins", 0), -_fpts(r.get("settings") or {}, "fpts")))
+        rank = next((i + 1 for i, r in enumerate(order) if r["roster_id"] == my["roster_id"]), None)
+        rows.append({
+            "league": league["name"], "team": team,
+            "record": f"{w}-{l}" + (f"-{t}" if t else ""), "wins": w, "losses": l, "ties": t,
+            "win_pct": round((w + 0.5 * t) / gp, 3) if gp else 0.0,
+            "pf": pf, "pa": pa, "max_pf": maxpf,
+            "pf_per_game": round(pf / gp, 1) if gp else 0.0,
+            "pa_per_game": round(pa / gp, 1) if gp else 0.0,
+            "diff": round(pf - pa, 2),
+            "efficiency": round(100 * pf / maxpf, 1) if maxpf else None,
+            "left_on_bench": round(maxpf - pf, 2) if maxpf else None,
+            "rank": rank, "total_teams": len(rosters),
+        })
+
+    n = len(rows)
+    tot_w = sum(r["wins"] for r in rows); tot_l = sum(r["losses"] for r in rows); tot_t = sum(r["ties"] for r in rows)
+    effs = [r["efficiency"] for r in rows if r["efficiency"] is not None]
+    return {
+        "season": season, "week": current_week,
+        "summary": {
+            "leagues": n, "record": f"{tot_w}-{tot_l}" + (f"-{tot_t}" if tot_t else ""),
+            "win_pct": round((tot_w + 0.5 * tot_t) / max(tot_w + tot_l + tot_t, 1), 3),
+            "pf": round(sum(r["pf"] for r in rows), 1), "pa": round(sum(r["pa"] for r in rows), 1),
+            "max_pf": round(sum(r["max_pf"] for r in rows), 1),
+            "avg_efficiency": round(sum(effs) / len(effs), 1) if effs else None,
+            "best_eff": max(rows, key=lambda r: r["efficiency"] or 0)["league"] if effs else None,
+            "worst_eff": min(rows, key=lambda r: r["efficiency"] if r["efficiency"] is not None else 999)["league"] if effs else None,
+        },
+        "results": rows,
+        "note": "Max PF is Sleeper's potential points (best possible lineup each week). Efficiency = PF ÷ Max PF. Rows are in your Sleeper league order.",
+    }

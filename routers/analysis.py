@@ -16,6 +16,28 @@ SLOT_ELIGIBILITY = {
     "WRRB_FLEX": ["WR", "RB"],
 }
 
+NFL_TEAMS = {"ARI","ATL","BAL","BUF","CAR","CHI","CIN","CLE","DAL","DEN","DET","GB","HOU","IND","JAX","KC","LV","LAC","LAR",
+             "MIA","MIN","NE","NO","NYG","NYJ","PHI","PIT","SEA","SF","TB","TEN","WAS"}
+
+async def bye_teams_for(season: str, week: int) -> set:
+    """NFL teams on bye this week = teams with no game in Sleeper's schedule feed.
+    Falls back to an empty set (so nothing is wrongly flagged) if the feed is unavailable."""
+    games = await get_schedule(season, week)
+    if not games:
+        return set()
+    playing = {t for g in games for t in (g.get("home"), g.get("away")) if t}
+    return NFL_TEAMS - playing
+
+def is_on_bye(p: dict, byes: set, week: int) -> bool:
+    """Schedule-derived byes first; the player DB's bye_week as a fallback when the feed is down."""
+    if byes:
+        return (p.get("team") or "") in byes
+    bw = p.get("bye_week")
+    try:
+        return bool(bw) and int(bw) == week
+    except (TypeError, ValueError):
+        return False
+
 def round_weight(r: int) -> float:
     return {1: 10, 2: 5, 3: 2, 4: 1}.get(r, 0.5)
 
@@ -136,6 +158,7 @@ async def get_starters_on_bye(req: UserRequest):
     user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
     week = req.week or current_week
     user_id = user["user_id"]
+    byes = await bye_teams_for(season, week)
     results = []
 
     for league in leagues:
@@ -155,16 +178,15 @@ async def get_starters_on_bye(req: UserRequest):
         on_bye = []
         for pid in starters:
             p = players_db.get(str(pid))
-            if not p:
+            if not p or not pid or str(pid) == "0":
                 continue
-            bye_week = p.get("bye_week")
-            if bye_week and int(bye_week) == week:
+            if is_on_bye(p, byes, week):
                 on_bye.append({"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team")})
 
         if on_bye:
             results.append({"league": league["name"], "team": my_team_name, "on_bye": on_bye})
 
-    return {"results": results}
+    return {"week": week, "bye_teams": sorted(byes), "results": results}
 
 @router.post("/alerts/open-starter-spots")
 async def get_open_starter_spots(req: UserRequest):
@@ -203,6 +225,7 @@ async def get_zero_projection_starters(req: UserRequest):
     stats_map = build_stats_map(stats_array)
     has_played = lambda pid: stats_map.get(str(pid), {}).get("gp", 0) >= 1
 
+    byes = await bye_teams_for(season, week)
     results = []
     for league in leagues:
         if league.get("status") == "complete":
@@ -231,11 +254,10 @@ async def get_zero_projection_starters(req: UserRequest):
             if proj_map.get(pid, 0) > 0:
                 continue
             p = players_db.get(pid) or {}
-            bye = p.get("bye_week")
             inj = (p.get("injury_status") or "").upper()
             team = p.get("team")
-            if bye and int(bye) == week:
-                reason = f"On bye (week {bye})"
+            if is_on_bye(p, byes, week):
+                reason = f"On bye (week {week})"
             elif inj in ("OUT", "IR", "PUP", "SUS", "NA"):
                 reason = f"Injury: {inj}"
             elif not team or team == "FA":
@@ -866,7 +888,32 @@ async def get_optimal_lineup(req: UserRequest):
         used = {s["optimal"]["id"] for s in lineup if s["optimal"]}
         bench = [p for p in pool if p["id"] not in used]
 
-        if gain < 0.5 or not moves:
+        # ── Free agents who out-project the optimal roster lineup ──
+        FA_MIN_GAIN = 1.5
+        rostered = {str(x) for r in rosters for x in (r.get("players") or [])}
+        fa_pool = sorted(
+            [{"id": pid, "name": player_name(pp), "position": pp.get("position"), "team": pp.get("team"),
+              "pts": round(proj_map.get(pid, 0), 1), "injury_status": pp.get("injury_status")}
+             for pid, pp in players_db.items()
+             if pid not in rostered and pp.get("position") in ("QB", "RB", "WR", "TE", "K", "DEF") and pp.get("team")
+             and proj_map.get(pid, 0) >= 3 and not has_played(pid)
+             and (pp.get("injury_status") or "").upper() not in ("OUT", "IR", "PUP", "SUS")],
+            key=lambda x: -x["pts"])
+        fa_upgrades, used_fa = [], set()
+        # weakest optimal slots first so the best FA replaces the worst starter he is eligible for
+        for sl in sorted(lineup, key=lambda x: (x["optimal"] or {}).get("pts", 0)):
+            if sl["locked"]:
+                continue
+            cur = sl["optimal"]; cur_pts = (cur or {}).get("pts", 0)
+            elig = SLOT_ELIGIBILITY.get(sl["slot"], [sl["slot"]])
+            best = next((f for f in fa_pool if f["position"] in elig and f["id"] not in used_fa and f["pts"] >= cur_pts + FA_MIN_GAIN), None)
+            if best:
+                used_fa.add(best["id"])
+                fa_upgrades.append({"slot": sl["slot"], "current": cur, "fa": best, "gain": round(best["pts"] - cur_pts, 1)})
+        fa_upgrades.sort(key=lambda x: -x["gain"])
+        fa_gain = round(sum(x["gain"] for x in fa_upgrades), 1)
+
+        if (gain < 0.5 or not moves) and not fa_upgrades:
             optimal_leagues.append({"league": league["name"], "team": my_team_name, "pts": current_pts})
         else:
             results.append({
@@ -875,9 +922,13 @@ async def get_optimal_lineup(req: UserRequest):
                 "lineup": [{"slot": s["slot"], "player": s["optimal"], "locked": s["locked"]} for s in lineup],
                 "moves": moves, "swaps": swaps, "bench": bench,
                 "locked_count": sum(1 for s in lineup if s["locked"]),
+                "fa_upgrades": fa_upgrades, "fa_gain": fa_gain,
+                "lineup_only": not moves or gain < 0.5,
             })
 
-    return {"week": week, "weeks_completed": weeks_completed, "results": results, "optimal_leagues": optimal_leagues}
+    return {"week": week, "weeks_completed": weeks_completed, "results": results, "optimal_leagues": optimal_leagues,
+            "summary": {"leagues": len(results) + len(optimal_leagues), "need_lineup_changes": sum(1 for r in results if not r["lineup_only"]),
+                        "have_fa_upgrades": sum(1 for r in results if r["fa_upgrades"]), "already_optimal": len(optimal_leagues)}}
 
 # ── MY POSITION NEEDS ─────────────────────────────────────────────────────────
 
@@ -2068,6 +2119,7 @@ async def get_week_review(req: WeekRequest):
         ss = league.get("scoring_settings") or {}
         proj_map = build_proj_map(proj_array, ss)
         next_proj_map = build_proj_map(next_proj_array, ss)
+        next_byes = await bye_teams_for(season, next_week)
         starter_slots = [s for s in league.get("roster_positions", []) if s not in ("BN", "IR", "TAXI")]
 
         rosters, league_users, matchups, next_matchups = await asyncio.gather(
@@ -2146,9 +2198,8 @@ async def get_week_review(req: WeekRequest):
         nxt_pool = []
         for p in pool:
             pl = players_db.get(p["id"]) or {}
-            bye = pl.get("bye_week")
             nxt_pool.append({**p, "pts": next_proj_map.get(p["id"], 0), "is_starter": p["id"] in nxt_set,
-                             "on_bye": bool(bye and int(bye) == next_week)})
+                             "on_bye": is_on_bye(pl, next_byes, next_week)})
         nxt = compute_lineup(starter_slots, nxt_starters, nxt_pool, never_played, key="pts")
         next_moves, next_swaps = lineup_moves(nxt)
         next_cur = round(sum((s["current"] or {}).get("pts", 0) for s in nxt), 1)
@@ -2649,6 +2700,7 @@ async def get_rooting_guide(req: UserRequest):
 
     stats_array, schedule = await asyncio.gather(get_stats(season, week), get_schedule(season, week))
     stats_map = build_stats_map(stats_array)
+    byes = (NFL_TEAMS - {t for g in schedule for t in (g.get("home"), g.get("away")) if t}) if schedule else set()
     # A team has played if any of its players has gp >= 1 this week (fallback when the schedule feed is down)
     teams_played = {(players_db.get(pid) or {}).get("team") for pid, st in stats_map.items() if (st.get("gp") or 0) >= 1}
     teams_played.discard(None)
@@ -2714,7 +2766,7 @@ async def get_rooting_guide(req: UserRequest):
             "for": t["for"], "against": t["against"], "net": net, "total": t["for"] + t["against"],
             "state": game_state(pid, p),
             "played": game_state(pid, p) != "pre",
-            "bye": bool(p.get("bye_week")) and int(p.get("bye_week")) == week,
+            "bye": is_on_bye(p, byes, week),
             "injury_status": p.get("injury_status"),
             "for_leagues": t["for_leagues"], "against_leagues": t["against_leagues"],
         })
@@ -2814,4 +2866,87 @@ async def get_season_records(req: UserRequest):
         },
         "results": rows,
         "note": "Max PF is Sleeper's potential points (best possible lineup each week). Efficiency = PF ÷ Max PF. Rows are in your Sleeper league order.",
+    }
+
+
+# ── IR-ELIGIBLE PLAYERS NOT ON IR ─────────────────────────────────────────────
+
+@router.post("/alerts/ir-eligible")
+async def get_ir_eligible(req: UserRequest):
+    """Rostered players (starters or bench; taxi ignored) whose injury status qualifies for the league's
+    IR slot but who are not in the reserve (IR) slot. Respects each league's reserve_allow_* settings."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    results = []
+
+    all_rosters, all_users = await asyncio.gather(
+        asyncio.gather(*[get_rosters(lg["league_id"]) for lg in leagues]),
+        asyncio.gather(*[get_league_users(lg["league_id"]) for lg in leagues]),
+    )
+    for league, rosters, league_users in zip(leagues, all_rosters, all_users):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        settings = league.get("settings") or {}
+        ir_slots = max(int(settings.get("reserve_slots") or 0), sum(1 for x in (league.get("roster_positions") or []) if x == "IR"))
+        # Statuses this league lets you stash on IR (Sleeper defaults: IR and PUP only)
+        allowed = {"IR", "PUP"}
+        if settings.get("reserve_allow_out"):      allowed.add("OUT")
+        if settings.get("reserve_allow_doubtful"): allowed.add("DOUBTFUL")
+        if settings.get("reserve_allow_sus"):      allowed.add("SUS")
+        if settings.get("reserve_allow_na"):       allowed.add("NA")
+        if settings.get("reserve_allow_cov"):      allowed.add("COV")
+
+        reserve = {str(x) for x in (my.get("reserve") or [])}
+        starters = {str(x) for x in (my.get("starters") or [])}
+        taxi = {str(x) for x in (my.get("taxi") or [])}
+        mu = next((u for u in league_users if u["user_id"] == user_id), None)
+        team = (mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
+
+        flagged, not_eligible = [], []
+        for pid in (my.get("players") or []):
+            pid = str(pid)
+            if pid in reserve or pid in taxi:
+                continue  # already on IR, or taxi (taxi players aren't costing a roster spot)
+            p = players_db.get(pid)
+            if not p:
+                continue
+            st = (p.get("injury_status") or "").upper()
+            if st not in ("OUT", "IR", "PUP", "SUS", "NA", "COV", "DOUBTFUL"):
+                continue
+            if st == "DOUBTFUL" and "DOUBTFUL" not in allowed:
+                continue  # doubtful is only interesting when the league allows it on IR
+            row = {"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team") or "FA",
+                   "status": st, "role": "starter" if pid in starters else "bench",
+                   "injury": p.get("injury_body_part") or p.get("injury_notes") or None}
+            (flagged if st in allowed else not_eligible).append(row)
+
+        if not flagged and not not_eligible:
+            continue
+        open_ir = max(ir_slots - len(reserve), 0)
+        results.append({
+            "league": league["name"], "team": team,
+            "ir_slots": ir_slots, "ir_used": len(reserve), "ir_open": open_ir,
+            "allowed_statuses": sorted(allowed),
+            "eligible": sorted(flagged, key=lambda r: (r["role"] != "starter", r["name"])),
+            "not_eligible": sorted(not_eligible, key=lambda r: (r["role"] != "starter", r["name"])),
+            "action": ("No IR slot in this league — drop or hold." if ir_slots == 0
+                       else f"Move {min(len(flagged), open_ir)} to IR now ({open_ir} open)." if flagged and open_ir > 0
+                       else "IR is full — swap someone out or drop." if flagged
+                       else "Out this week but not IR-eligible here."),
+        })
+
+    n_elig = sum(len(r["eligible"]) for r in results)
+    return {
+        "results": results,
+        "summary": {
+            "leagues": len(results),
+            "eligible_players": n_elig,
+            "can_move_now": sum(min(len(r["eligible"]), r["ir_open"]) for r in results),
+            "ir_full": sum(1 for r in results if r["eligible"] and r["ir_slots"] > 0 and r["ir_open"] == 0),
+            "no_ir_slot": sum(1 for r in results if r["eligible"] and r["ir_slots"] == 0),
+            "not_eligible_players": sum(len(r["not_eligible"]) for r in results),
+        },
+        "note": "Eligibility uses each league's IR rules (Sleeper default: IR and PUP only; some leagues also allow OUT, SUS, NA, COV or Doubtful). "
+                "'Not eligible' lists OUT/other players the league won't let you stash, so you can decide to hold or drop.",
     }

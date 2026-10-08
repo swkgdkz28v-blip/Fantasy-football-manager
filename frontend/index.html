@@ -425,6 +425,48 @@ function AlertsView({ data, type }) {
   );
 }
 
+// ── IR-ELIGIBLE VIEW ──────────────────────────────────────────────────────────
+function IrEligibleView({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  const withElig = (data.results || []).filter(r => r.eligible?.length);
+  const onlyNot = (data.results || []).filter(r => !r.eligible?.length && r.not_eligible?.length);
+  const row = (p, color) => e('div', { key: p.id, className: 'player-row' },
+    e('span', { style: { fontSize: 9, color: p.role === 'starter' ? 'var(--accent3)' : 'var(--text3)', minWidth: 46, textAlign: 'center', fontWeight: p.role === 'starter' ? 700 : 400 } }, p.role.toUpperCase()),
+    e(PosBadge, { pos: p.position }),
+    e('span', { className: 'player-name' }, p.name, p.injury ? e('span', { style: { fontSize: 10, color: 'var(--text3)' } }, ` · ${p.injury}`) : null),
+    e('span', { className: 'player-team' }, p.team),
+    e(Tag, { color }, p.status));
+  if (!withElig.length && !onlyNot.length) return e(Alert, { type: 'success', title: '✅ All Clear' }, e('p', null, 'No IR-eligible players sitting outside the IR slot.'));
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.eligible_players ?? 0, label: 'IR-Eligible, Not On IR', color: 'var(--accent2)' }),
+      e(StatTile, { value: sm.can_move_now ?? 0, label: 'Can Move Now', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.ir_full ?? 0, label: 'IR Full', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.no_ir_slot ?? 0, label: 'No IR Slot', color: 'var(--text3)' })
+    ),
+    withElig.map(r => e(Card, { key: r.league, borderColor: r.ir_open > 0 ? 'var(--accent)' : 'var(--accent2)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontSize: 12, fontWeight: 800, color: r.ir_open > 0 ? 'var(--accent)' : 'var(--accent2)' } }, `IR ${r.ir_used}/${r.ir_slots}`),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `allows ${r.allowed_statuses.join(', ')}`))
+      ),
+      e('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 8, fontWeight: 700 } }, r.action),
+      r.eligible.map(p => row(p, 'red')),
+      r.not_eligible?.length > 0 && e('details', { style: { marginTop: 6 } },
+        e('summary', { style: { fontSize: 10, color: 'var(--text3)', cursor: 'pointer' } }, `${r.not_eligible.length} out but not IR-eligible here`),
+        r.not_eligible.map(p => row(p, 'yellow')))
+    )),
+    onlyNot.length > 0 && e(Card, { borderColor: 'var(--text3)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6 } }, `Out but not IR-eligible (${onlyNot.length} leagues) — hold or drop`),
+      onlyNot.map(r => e('div', { key: r.league, style: { fontSize: 11, padding: '4px 0', borderBottom: '1px solid var(--border)' } },
+        e('b', null, r.league), e('span', { style: { color: 'var(--text3)' } }, ` · ${r.not_eligible.map(p => `${p.name} (${p.status}${p.role === 'starter' ? ', starting!' : ''})`).join(', ')}`)))
+    ),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
+  );
+}
+
 function WeekRecordView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No matchup data found.'));
   const wins = data.results.filter(r => r.proj_win).length;
@@ -569,19 +611,33 @@ function OptimalLineupView({ data }) {
     e('div', { className: 'stat-row' },
       e(StatTile, { value: total, label: 'Leagues', color: 'var(--text2)' }),
       e(StatTile, { value: data.optimal_leagues?.length || 0, label: 'Already Optimal', color: 'var(--accent)' }),
-      e(StatTile, { value: data.results?.length || 0, label: 'Need Changes', color: 'var(--accent3)' })
+      e(StatTile, { value: data.summary?.need_lineup_changes ?? (data.results?.length || 0), label: 'Lineup Changes', color: 'var(--accent3)' }),
+      e(StatTile, { value: data.summary?.have_fa_upgrades ?? 0, label: 'FA Upgrades', color: 'var(--accent4)' })
     ),
-    data.results?.map(r => e(Card, { key: r.league },
+    data.results?.map(r => e(Card, { key: r.league, borderColor: r.lineup_only ? 'var(--accent4)' : undefined },
       e('div', { className: 'card-header' },
         e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
         e('div', { style: { textAlign: 'right' } },
           e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', color: 'var(--accent)' } }, r.optimal_pts?.toFixed(1)),
           e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'optimal pts'),
-          e('div', { style: { fontSize: 11, color: 'var(--accent3)' } }, `+${r.gain?.toFixed(1)} vs current`),
+          !r.lineup_only && e('div', { style: { fontSize: 11, color: 'var(--accent3)' } }, `+${r.gain?.toFixed(1)} vs current`),
+          r.fa_gain > 0 && e('div', { style: { fontSize: 11, color: 'var(--accent4)' } }, `+${r.fa_gain} more via FAs`),
           r.locked_count > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `🔒 ${r.locked_count} locked (played)`)
         )
       ),
+      r.lineup_only && e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 8 } }, 'Roster lineup is already optimal — free agents below would improve it.'),
       e(MovesList, { moves: r.moves, ptsKey: 'pts' }),
+      r.fa_upgrades?.length > 0 && e('div', { style: { marginBottom: 12 } },
+        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent4)', marginBottom: 6 } }, '🆓 Free Agent Upgrades'),
+        r.fa_upgrades.map((u, i) => e('div', { key: i, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'rgba(92,158,255,0.06)', border: '1px solid rgba(92,158,255,0.3)', borderRadius: 8, marginBottom: 4 } },
+          e('span', { style: { fontSize: 10, fontWeight: 800, color: 'var(--accent4)', minWidth: 54 } }, `+ ${u.slot}`),
+          e(PosBadge, { pos: u.fa.position }),
+          e('div', { style: { flex: 1, minWidth: 0 } },
+            e('div', { style: { fontSize: 12, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `${u.fa.name} (${u.fa.team})`, u.fa.injury_status ? e('span', { style: { fontSize: 9, color: 'var(--accent3)' } }, ` ${u.fa.injury_status}`) : null),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, u.current ? `over ${u.current.name} (${u.current.pts})` : 'fills empty slot')),
+          e('span', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent4)' } }, `${u.fa.pts} (+${u.gain})`)
+        ))
+      ),
       e('details', null,
       e('summary', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6, cursor: 'pointer' } }, 'Full optimal lineup'),
       r.lineup?.map((os, i) => {
@@ -1686,6 +1742,7 @@ const SECTIONS = [
       { id: 'bye', label: '📅 Starters on Bye', endpoint: '/alerts/starters-on-bye' },
       { id: 'open', label: '⚡ Open Spots', endpoint: '/alerts/open-starter-spots' },
       { id: 'zero-proj', label: '0️⃣ Zero-Point Starters', endpoint: '/alerts/zero-projection-starters' },
+      { id: 'ir-eligible', label: '🏥 Move To IR', endpoint: '/alerts/ir-eligible' },
     ]
   },
   {
@@ -1849,6 +1906,8 @@ function App() {
         return e(RootingGuideView, { data });
       case 'season-records':
         return e(SeasonRecordsView, { data });
+      case 'ir-eligible':
+        return e(IrEligibleView, { data });
       default:
         return e(GenericView, { data, title: feature.label });
     }
@@ -1861,7 +1920,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.14')
+        e('span', { className: 'app-version' }, 'v10.18')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

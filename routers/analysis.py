@@ -888,17 +888,19 @@ async def get_optimal_lineup(req: UserRequest):
         used = {s["optimal"]["id"] for s in lineup if s["optimal"]}
         bench = [p for p in pool if p["id"] not in used]
 
-        # ── Free agents who out-project the optimal roster lineup ──
+        # ── Taxi players and free agents who out-project the optimal roster lineup ──
         FA_MIN_GAIN = 1.5
         rostered = {str(x) for r in rosters for x in (r.get("players") or [])}
-        fa_pool = sorted(
-            [{"id": pid, "name": player_name(pp), "position": pp.get("position"), "team": pp.get("team"),
-              "pts": round(proj_map.get(pid, 0), 1), "injury_status": pp.get("injury_status")}
-             for pid, pp in players_db.items()
-             if pid not in rostered and pp.get("position") in ("QB", "RB", "WR", "TE", "K", "DEF") and pp.get("team")
-             and proj_map.get(pid, 0) >= 3 and not has_played(pid)
-             and (pp.get("injury_status") or "").upper() not in ("OUT", "IR", "PUP", "SUS")],
-            key=lambda x: -x["pts"])
+        def ext(pid, pp, source):
+            return {"id": pid, "name": player_name(pp), "position": pp.get("position"), "team": pp.get("team"),
+                    "pts": round(proj_map.get(pid, 0), 1), "injury_status": pp.get("injury_status"), "source": source}
+        ok = lambda pid, pp: (pp.get("position") in ("QB", "RB", "WR", "TE", "K", "DEF") and pp.get("team")
+                              and proj_map.get(pid, 0) >= 3 and not has_played(pid)
+                              and (pp.get("injury_status") or "").upper() not in ("OUT", "IR", "PUP", "SUS"))
+        taxi_pool = [ext(pid, pp, "taxi") for pid in taxi_ids if (pp := players_db.get(pid)) and ok(pid, pp)]
+        fa_only = [ext(pid, pp, "FA") for pid, pp in players_db.items() if pid not in rostered and ok(pid, pp)]
+        # taxi first (already yours — just promote), then FAs; within each, best projection first
+        fa_pool = sorted(taxi_pool, key=lambda x: -x["pts"]) + sorted(fa_only, key=lambda x: -x["pts"])
         fa_upgrades, used_fa = [], set()
         # weakest optimal slots first so the best FA replaces the worst starter he is eligible for
         for sl in sorted(lineup, key=lambda x: (x["optimal"] or {}).get("pts", 0)):
@@ -906,7 +908,8 @@ async def get_optimal_lineup(req: UserRequest):
                 continue
             cur = sl["optimal"]; cur_pts = (cur or {}).get("pts", 0)
             elig = SLOT_ELIGIBILITY.get(sl["slot"], [sl["slot"]])
-            best = next((f for f in fa_pool if f["position"] in elig and f["id"] not in used_fa and f["pts"] >= cur_pts + FA_MIN_GAIN), None)
+            cands = [f for f in fa_pool if f["position"] in elig and f["id"] not in used_fa and f["pts"] >= cur_pts + FA_MIN_GAIN]
+            best = max(cands, key=lambda f: (f["pts"], f["source"] == "taxi")) if cands else None
             if best:
                 used_fa.add(best["id"])
                 fa_upgrades.append({"slot": sl["slot"], "current": cur, "fa": best, "gain": round(best["pts"] - cur_pts, 1)})
@@ -923,6 +926,7 @@ async def get_optimal_lineup(req: UserRequest):
                 "moves": moves, "swaps": swaps, "bench": bench,
                 "locked_count": sum(1 for s in lineup if s["locked"]),
                 "fa_upgrades": fa_upgrades, "fa_gain": fa_gain,
+                "taxi_upgrades": sum(1 for u in fa_upgrades if u["fa"]["source"] == "taxi"),
                 "lineup_only": not moves or gain < 0.5,
             })
 

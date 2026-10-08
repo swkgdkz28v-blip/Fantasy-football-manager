@@ -628,13 +628,13 @@ function OptimalLineupView({ data }) {
       r.lineup_only && e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 8 } }, 'Roster lineup is already optimal — free agents below would improve it.'),
       e(MovesList, { moves: r.moves, ptsKey: 'pts' }),
       r.fa_upgrades?.length > 0 && e('div', { style: { marginBottom: 12 } },
-        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent4)', marginBottom: 6 } }, '🆓 Free Agent Upgrades'),
+        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent4)', marginBottom: 6 } }, r.taxi_upgrades > 0 ? '🚕 Taxi / 🆓 Free Agent Upgrades' : '🆓 Free Agent Upgrades'),
         r.fa_upgrades.map((u, i) => e('div', { key: i, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'rgba(92,158,255,0.06)', border: '1px solid rgba(92,158,255,0.3)', borderRadius: 8, marginBottom: 4 } },
-          e('span', { style: { fontSize: 10, fontWeight: 800, color: 'var(--accent4)', minWidth: 54 } }, `+ ${u.slot}`),
+          e('span', { style: { fontSize: 10, fontWeight: 800, color: u.fa.source === 'taxi' ? 'var(--accent3)' : 'var(--accent4)', minWidth: 54 } }, `${u.fa.source === 'taxi' ? '🚕' : '+'} ${u.slot}`),
           e(PosBadge, { pos: u.fa.position }),
           e('div', { style: { flex: 1, minWidth: 0 } },
             e('div', { style: { fontSize: 12, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `${u.fa.name} (${u.fa.team})`, u.fa.injury_status ? e('span', { style: { fontSize: 9, color: 'var(--accent3)' } }, ` ${u.fa.injury_status}`) : null),
-            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, u.current ? `over ${u.current.name} (${u.current.pts})` : 'fills empty slot')),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${u.fa.source === 'taxi' ? 'promote from taxi · ' : 'free agent · '}${u.current ? `over ${u.current.name} (${u.current.pts})` : 'fills empty slot'}`)),
           e('span', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent4)' } }, `${u.fa.pts} (+${u.gain})`)
         ))
       ),
@@ -1920,7 +1920,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.18')
+        e('span', { className: 'app-version' }, 'v10.19')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

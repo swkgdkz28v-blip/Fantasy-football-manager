@@ -406,31 +406,64 @@ async def get_week_analysis(req: WeekRequest):
 
 @router.post("/analysis/week-record")
 async def get_week_record(req: WeekRequest):
+    """Projected record (pre-game projections, frozen) plus a live 'expected' record where players who
+    have finished use actual points, in-progress players use banked + un-played share of projection,
+    and players yet to play use their projection."""
     user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
     user_id = user["user_id"]
     week = req.week
     week_completed = week < current_week
+    FULL_GAME_SNAPS = 64.0
 
-    proj_array = await get_projections(season, week)
+    proj_array, stats_array, schedule = await asyncio.gather(
+        get_projections(season, week), get_stats(season, week), get_schedule(season, week)
+    )
+    stats_map = build_stats_map(stats_array)
+    team_status = {}
+    for g in schedule:
+        for t in (g.get("home"), g.get("away")):
+            if t:
+                team_status[t] = (g.get("status") or "").lower()
+    have_schedule = bool(team_status)
+    teams_played = {(players_db.get(pid) or {}).get("team") for pid, st in stats_map.items() if (st.get("gp") or 0) >= 1}
+
+    def game_state(pid, p):
+        if week_completed:
+            return "final"
+        st = team_status.get(p.get("team"))
+        if st in ("complete", "final", "post_game"):
+            return "final"
+        if st in ("in_game", "in_progress", "live", "halftime"):
+            return "live"
+        if st in ("pre_game", "scheduled"):
+            return "pre"
+        if (stats_map.get(pid, {}).get("gp") or 0) >= 1 or p.get("team") in teams_played:
+            return "final" if have_schedule else "live"
+        return "pre"
+
+    def progress(pid, p):
+        snaps = (stats_map.get(pid) or {}).get("tm_off_snp") or 0
+        if not snaps:
+            for q, qs in stats_map.items():
+                if (players_db.get(q) or {}).get("team") == p.get("team") and (qs.get("tm_off_snp") or 0) > 0:
+                    snaps = qs["tm_off_snp"]; break
+        return min(max(snaps / FULL_GAME_SNAPS, 0.05), 0.97) if snaps else 0.5
+
     results = []
-
     for league in leagues:
         ss = league.get("scoring_settings") or {}
         proj_map = build_proj_map(proj_array, ss)
 
         rosters, league_users, matchups = await asyncio.gather(
-            get_rosters(league["league_id"]),
-            get_league_users(league["league_id"]),
-            get_matchups(league["league_id"], week)
+            get_rosters(league["league_id"]), get_league_users(league["league_id"]), get_matchups(league["league_id"], week)
         )
-
         my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
         if not my_roster:
             continue
         my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
-        if not my_matchup:
+        if not my_matchup or my_matchup.get("matchup_id") is None:
             continue
-        opp_matchup = next((m for m in matchups if m["matchup_id"] == my_matchup["matchup_id"] and m["roster_id"] != my_roster["roster_id"]), None)
+        opp_matchup = next((m for m in matchups if m.get("matchup_id") == my_matchup["matchup_id"] and m["roster_id"] != my_roster["roster_id"]), None)
         if not opp_matchup:
             continue
 
@@ -440,18 +473,53 @@ async def get_week_record(req: WeekRequest):
         opp_user = user_lookup.get(opp_roster["owner_id"]) if opp_roster else None
         opp_name = (opp_user or {}).get("metadata", {}).get("team_name") or (opp_user or {}).get("display_name", "Opponent")
 
-        my_proj = round(sum(proj_map.get(str(pid), 0) for pid in my_matchup.get("starters", [])), 2)
-        opp_proj = round(sum(proj_map.get(str(pid), 0) for pid in opp_matchup.get("starters", [])), 2)
+        def side(m):
+            pts_map = m.get("players_points") or {}
+            proj_total = exp_total = 0.0
+            pre = live = final = 0
+            for pid in (m.get("starters") or []):
+                pid = str(pid)
+                if not pid or pid == "0":
+                    continue
+                p = players_db.get(pid) or {}
+                proj = proj_map.get(pid, 0)
+                actual = float(pts_map.get(pid, 0) or 0)
+                proj_total += proj
+                state = game_state(pid, p)
+                if state == "final":
+                    exp_total += actual; final += 1
+                elif state == "live":
+                    exp_total += actual + max(proj * (1 - progress(pid, p)), 0); live += 1
+                else:
+                    exp_total += proj; pre += 1
+            # Sleeper's matchup total is authoritative for banked points once anything has scored
+            banked = float(m.get("points") or 0)
+            return {"proj": round(proj_total, 2), "exp": round(exp_total, 2), "banked": round(banked, 2),
+                    "pre": pre, "live": live, "final": final}
 
-        proj_win = my_proj > opp_proj
-        proj_diff = my_proj - opp_proj
-        win_prob = round(1 / (1 + 2.71828 ** (-proj_diff / 8)) * 100)
+        me, opp = side(my_matchup), side(opp_matchup)
+        # expected total uses Sleeper's banked points + remaining share so it matches the app's score
+        def exp_with_banked(sd, m):
+            if week_completed:
+                return round(float(m.get("points") or 0), 2)
+            remaining = sd["exp"] - sum(float(v or 0) for k, v in (m.get("players_points") or {}).items() if str(k) in {str(x) for x in (m.get("starters") or [])})
+            return round(sd["banked"] + max(remaining, 0), 2)
+        my_exp, opp_exp = exp_with_banked(me, my_matchup), exp_with_banked(opp, opp_matchup)
+
+        proj_win = me["proj"] > opp["proj"]
+        proj_diff = me["proj"] - opp["proj"]
+        win_prob = round(1 / (1 + math.exp(-proj_diff / 8)) * 100)
+
+        all_final = (me["pre"] + me["live"] + opp["pre"] + opp["live"]) == 0
+        exp_diff = my_exp - opp_exp
+        exp_win = my_exp > opp_exp
+        exp_prob = (100 if exp_diff > 0 else 0 if exp_diff < 0 else 50) if all_final else round(1 / (1 + math.exp(-exp_diff / 8)) * 100)
+        status = ("FINAL" if all_final else "LIVE" if (me["live"] + opp["live"]) > 0 or (me["final"] + opp["final"]) > 0 else "PREGAME")
 
         actual_won = actual_tied = surprise = None
         my_actual = opp_actual = None
-        if week_completed:
-            my_actual = my_matchup.get("points", 0)
-            opp_actual = opp_matchup.get("points", 0)
+        if all_final:
+            my_actual, opp_actual = my_exp, opp_exp
             actual_won = my_actual > opp_actual
             actual_tied = my_actual == opp_actual
             if (proj_win != actual_won) and abs(proj_diff) > 5:
@@ -460,21 +528,30 @@ async def get_week_record(req: WeekRequest):
         _mu = user_lookup.get(user_id)
         my_team_name = (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
         results.append({
-            "league": league["name"],
-            "team": my_team_name,
-            "opp_name": opp_name,
-            "my_proj": my_proj,
-            "opp_proj": opp_proj,
-            "proj_win": proj_win,
-            "win_prob": win_prob,
-            "my_actual": my_actual,
-            "opp_actual": opp_actual,
-            "actual_won": actual_won,
-            "actual_tied": actual_tied,
+            "league": league["name"], "team": my_team_name, "opp_name": opp_name,
+            "my_proj": me["proj"], "opp_proj": opp["proj"], "proj_win": proj_win, "win_prob": win_prob,
+            "my_exp": my_exp, "opp_exp": opp_exp, "exp_win": exp_win, "exp_prob": exp_prob,
+            "flipped": proj_win != exp_win,
+            "status": status, "my_left": me["pre"] + me["live"], "opp_left": opp["pre"] + opp["live"],
+            "my_actual": my_actual, "opp_actual": opp_actual, "actual_won": actual_won, "actual_tied": actual_tied,
             "surprise": surprise,
         })
 
-    return {"week": week, "week_completed": week_completed, "results": results}
+    proj_w = sum(1 for r in results if r["proj_win"]); exp_w = sum(1 for r in results if r["exp_win"])
+    finals = [r for r in results if r["status"] == "FINAL"]
+    return {
+        "week": week, "week_completed": week_completed, "have_schedule": have_schedule,
+        "summary": {
+            "leagues": len(results),
+            "projected": f"{proj_w}-{len(results) - proj_w}",
+            "expected": f"{exp_w}-{len(results) - exp_w}",
+            "final": f"{sum(1 for r in finals if r['actual_won'])}-{sum(1 for r in finals if not r['actual_won'] and not r['actual_tied'])}",
+            "finals": len(finals), "live": sum(1 for r in results if r["status"] == "LIVE"),
+            "flipped_up": sum(1 for r in results if r["flipped"] and r["exp_win"]),
+            "flipped_down": sum(1 for r in results if r["flipped"] and not r["exp_win"]),
+        },
+        "results": results,
+    }
 
 # ── THERE'S A CHANCE ──────────────────────────────────────────────────────────
 

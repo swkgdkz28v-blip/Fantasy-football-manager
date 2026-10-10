@@ -469,45 +469,43 @@ function IrEligibleView({ data }) {
 
 function WeekRecordView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No matchup data found.'));
-  const wins = data.results.filter(r => r.proj_win).length;
-  const losses = data.results.filter(r => !r.proj_win).length;
-  const actualWins = data.week_completed ? data.results.filter(r => r.actual_won && !r.actual_tied).length : null;
-  const actualLosses = data.week_completed ? data.results.filter(r => !r.actual_won && !r.actual_tied).length : null;
-
+  const sm = data.summary || {};
+  const live = data.results.filter(r => r.status === 'LIVE');
+  const finals = data.results.filter(r => r.status === 'FINAL');
+  const pregame = data.results.filter(r => r.status === 'PREGAME');
+  const flipped = data.results.filter(r => r.flipped);
+  const col = w => w ? 'var(--accent)' : 'var(--accent2)';
+  const row = r => e('div', { key: r.league, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${col(r.exp_win)}`, borderRadius: 8, marginBottom: 6 } },
+    e('div', { style: { flex: 1, minWidth: 0 } },
+      e('div', { style: { fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
+      e('div', { style: { fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `${r.team ? r.team + ' · ' : ''}vs ${r.opp_name}`)),
+    e('div', { style: { textAlign: 'center', minWidth: 78 } },
+      e('div', { style: { fontSize: 11, color: col(r.proj_win) } }, `${r.my_proj.toFixed(1)}–${r.opp_proj.toFixed(1)}`),
+      e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, `proj ${r.win_prob}%`)),
+    e('div', { style: { textAlign: 'center', minWidth: 78 } },
+      e('div', { style: { fontSize: 12, fontWeight: 700, color: col(r.exp_win) } }, `${r.my_exp.toFixed(1)}–${r.opp_exp.toFixed(1)}`),
+      e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, r.status === 'FINAL' ? 'final' : r.status === 'LIVE' ? `exp ${r.exp_prob}% · ${r.my_left}/${r.opp_left} left` : `exp ${r.exp_prob}%`)),
+    e('div', { style: { textAlign: 'right', minWidth: 44 } },
+      e('div', { style: { fontWeight: 800, fontSize: 11, color: col(r.exp_win) } }, r.status === 'FINAL' ? (r.actual_tied ? 'TIE' : r.actual_won ? 'WIN' : 'LOSS') : (r.exp_win ? '▲ WIN' : '▼ LOSS')),
+      r.flipped && e('div', { style: { fontSize: 9, color: r.exp_win ? 'var(--accent)' : 'var(--accent2)', fontWeight: 700 } }, r.exp_win ? 'flipped up' : 'flipped down'),
+      r.surprise && e('div', { style: { fontSize: 9, color: 'var(--accent3)' } }, r.surprise === 'upset_win' ? '🎉 upset' : '😤 upset'))
+  );
+  const section = (title, rows, color) => rows.length > 0 && e('div', { style: { marginBottom: 12 } },
+    e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color, marginBottom: 6 } }, `${title} (${rows.length})`), rows.map(row));
   return e('div', null,
     e('div', { className: 'stat-row' },
-      e(StatTile, { value: `${wins}-${losses}`, label: 'Projected', color: 'var(--accent4)' }),
-      data.week_completed
-        ? e(StatTile, { value: `${actualWins}-${actualLosses}`, label: 'Actual', color: 'var(--accent)' })
-        : e(StatTile, { value: '?-?', label: 'Actual', color: 'var(--text3)' }),
-      e(StatTile, { value: data.results.filter(r => r.surprise).length, label: 'Surprises', color: 'var(--accent3)' })
+      e(StatTile, { value: sm.projected, label: 'Projected', color: 'var(--accent4)' }),
+      e(StatTile, { value: sm.expected, label: 'Expected Now', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.finals > 0 ? sm.final : '—', label: `Final (${sm.finals ?? 0})`, color: 'var(--accent)' }),
+      e(StatTile, { value: `+${sm.flipped_up ?? 0} / −${sm.flipped_down ?? 0}`, label: 'Flipped vs Proj', color: 'var(--text2)' })
     ),
-    data.results.filter(r => r.surprise).length > 0 && e(Card, { borderColor: 'var(--accent3)' },
-      e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--accent3)', marginBottom: 10 } }, '⚡ SURPRISES'),
-      data.results.filter(r => r.surprise).map(r =>
-        e('div', { key: r.league, style: { display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid var(--border)' } },
-          e('div', null, e('div', { style: { fontWeight: 700, fontSize: 13 } }, r.league), e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, `${r.team ? r.team + ' · ' : ''}vs ${r.opp_name}`)),
-          e('div', { style: { textAlign: 'right' } },
-            e('div', { style: { fontWeight: 700, fontSize: 11, color: r.surprise === 'upset_win' ? 'var(--accent)' : 'var(--accent2)' } }, r.surprise === 'upset_win' ? '🎉 Upset Win' : '😤 Upset Loss'),
-            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${r.my_actual?.toFixed(2)} – ${r.opp_actual?.toFixed(2)}`)
-          )
-        )
-      )
-    ),
-    e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 10 } }, 'BY LEAGUE'),
-    data.results.map(r => {
-      const projColor = r.proj_win ? 'var(--accent)' : 'var(--accent2)';
-      return e('div', { key: r.league, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${projColor}`, borderRadius: 8, marginBottom: 6, flexWrap: 'wrap' } },
-        e('div', { style: { flex: 1 } }, e('div', { style: { fontWeight: 700, fontSize: 13 } }, r.league), e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, `${r.team ? r.team + ' · ' : ''}vs ${r.opp_name}`)),
-        e('div', { style: { textAlign: 'center', minWidth: 90 } }, e('div', { style: { fontSize: 12, fontWeight: 600 } }, `${r.my_proj} – ${r.opp_proj}`), e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'projected')),
-        data.week_completed && e('div', { style: { textAlign: 'center', minWidth: 90 } }, e('div', { style: { fontSize: 12, fontWeight: 600 } }, `${r.my_actual?.toFixed(2)} – ${r.opp_actual?.toFixed(2)}`), e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'actual')),
-        e('div', { style: { textAlign: 'right' } },
-          e('div', { style: { fontWeight: 700, color: projColor, fontSize: 11 } }, r.proj_win ? '📈 WIN' : '📉 LOSS'),
-          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${r.win_prob}% win prob`),
-          data.week_completed && r.surprise && e(Tag, { color: r.surprise === 'upset_win' ? 'green' : 'red' }, r.surprise === 'upset_win' ? '🎉 Upset' : '😤 Upset')
-        )
-      );
-    })
+    data.have_schedule === false && e(Alert, { type: 'warning' }, e('p', null, 'Live game status unavailable — in-progress players are estimated at 50%.')),
+    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 12 } },
+      'Projected = pre-game projections (frozen). Expected = actual points for finished players, banked + remaining share for in-progress, projection for players yet to play.'),
+    section('🔄 Flipped vs projection', flipped, 'var(--accent3)'),
+    section('🔴 In progress', live.filter(r => !r.flipped), 'var(--accent4)'),
+    section('⏳ Pregame', pregame.filter(r => !r.flipped), 'var(--text3)'),
+    section('🏁 Final', finals.filter(r => !r.flipped), 'var(--accent)')
   );
 }
 
@@ -1920,7 +1918,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.19')
+        e('span', { className: 'app-version' }, 'v10.20')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

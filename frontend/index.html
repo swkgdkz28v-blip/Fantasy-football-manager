@@ -573,30 +573,44 @@ function ThereIsAChanceView({ data }) {
 }
 
 
-// Renders explicit swap pairs from the backend. `ptsKey` picks which number to show.
+// Renders lineup moves from the backend as stacked, phone-readable rows.
+// ptsKey = main number; subKey = season average (shown with ±sd and GP when present).
 function MovesList({ moves, ptsKey = 'pts', subKey, title = '🔄 Moves To Make', verb }) {
   if (!moves?.length) return null;
   const v = verb || { start: 'START', move: 'MOVE', bench: 'BENCH' };
   const STYLE = {
-    start: { bg: 'rgba(0,229,160,0.06)',  border: 'rgba(0,229,160,0.3)',  color: 'var(--accent)',  icon: '▲' },
-    move:  { bg: 'rgba(92,158,255,0.06)', border: 'rgba(92,158,255,0.3)', color: 'var(--accent4)', icon: '↔' },
-    bench: { bg: 'rgba(255,92,92,0.06)',  border: 'rgba(255,92,92,0.3)',  color: 'var(--accent2)', icon: '▼' },
+    start: { bg: 'rgba(0,229,160,0.06)',  border: 'rgba(0,229,160,0.35)',  color: 'var(--accent)',  icon: '▲' },
+    move:  { bg: 'rgba(92,158,255,0.06)', border: 'rgba(92,158,255,0.35)', color: 'var(--accent4)', icon: '↔' },
+    bench: { bg: 'rgba(255,92,92,0.06)',  border: 'rgba(255,92,92,0.35)',  color: 'var(--accent2)', icon: '▼' },
   };
-  const pts = p => `${p[ptsKey] ?? p.pts ?? ''}${subKey && p[subKey] != null ? (p.gp > 0 ? ` · ${p[subKey]}${p.std != null ? ` ±${p.std}` : ''} avg (${p.gp} GP)` : ' · 0 GP') : ''}${subKey && p.blended != null && p.gp > 0 ? ` → ${p.blended} floor` : ''}`;
+  const stat = (label, value, color) => e('div', { style: { display: 'flex', flexDirection: 'column', minWidth: 54 } },
+    e('span', { style: { fontSize: 10, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: 0.5 } }, label),
+    e('span', { style: { fontSize: 15, fontWeight: 700, color: color || 'var(--text)' } }, value));
   return e('div', { style: { marginBottom: 12 } },
-    e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent3)', marginBottom: 6 } }, title),
+    e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent3)', marginBottom: 6 } }, title),
     moves.map((m, i) => {
       const st = STYLE[m.type] || STYLE.move;
       const p = m.player;
-      const where = m.type === 'start' ? `→ ${m.to_slot}` : m.type === 'move' ? `${m.from_slot} → ${m.to_slot}` : `from ${m.from_slot}`;
-      return e('div', { key: i, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: st.bg, border: `1px solid ${st.border}`, borderRadius: 8, marginBottom: 4 } },
-        e('span', { style: { fontSize: 10, fontWeight: 800, color: st.color, minWidth: 54 } }, `${st.icon} ${v[m.type]}`),
-        e(PosBadge, { pos: p.position }),
-        e('div', { style: { flex: 1, minWidth: 0 } },
-          e('div', { style: { fontSize: 12, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name),
-          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${p.team} · ${where}`)
+      const where = m.type === 'start' ? `into ${m.to_slot}` : m.type === 'move' ? `${m.from_slot} → ${m.to_slot}` : `out of ${m.from_slot}`;
+      const main = p[ptsKey] ?? p.pts;
+      const hasAvg = subKey && p[subKey] != null && p.gp > 0;
+      return e('div', { key: i, style: { padding: '10px 12px', background: st.bg, border: `1px solid ${st.border}`, borderRadius: 10, marginBottom: 6 } },
+        // line 1: action + player
+        e('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 } },
+          e('span', { style: { fontSize: 11, fontWeight: 800, color: st.color, padding: '2px 7px', border: `1px solid ${st.color}`, borderRadius: 5, whiteSpace: 'nowrap' } }, `${st.icon} ${v[m.type]}`),
+          e(PosBadge, { pos: p.position }),
+          e('span', { style: { fontSize: 15, fontWeight: 700, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name)
         ),
-        e('span', { style: { fontSize: 12, fontWeight: 700, color: st.color } }, pts(p))
+        // line 2: team + slot route
+        e('div', { style: { fontSize: 12, color: 'var(--text2)', marginBottom: hasAvg || main != null ? 8 : 0 } }, `${p.team || 'FA'} · ${where}`),
+        // line 3: numbers, spaced out
+        e('div', { style: { display: 'flex', gap: 18, flexWrap: 'wrap' } },
+          main != null && stat(subKey ? 'Proj' : 'Pts', main, st.color),
+          hasAvg && stat('Avg', `${p[subKey]}${p.std != null ? ` ±${p.std}` : ''}`),
+          hasAvg && stat('Games', p.gp),
+          subKey && p.gp === 0 && stat('Games', '0'),
+          subKey && p.blended != null && hasAvg && stat('Floor', p.blended, 'var(--accent3)')
+        )
       );
     })
   );
@@ -1295,15 +1309,15 @@ function UpgradeRecsView({ data }) {
       e('div', { className: 'card-header' },
         e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
         e('div', { style: { textAlign: 'right' } },
-          e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.4rem', color: 'var(--accent3)' } }, `+${r.gain?.toFixed(1)}`),
-          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'pts gain')
+          e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.8rem', color: 'var(--accent3)', lineHeight: 1 } }, `+${r.gain?.toFixed(1)}`),
+          e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, 'floor pts gained')
         )
       ),
-      e(MovesList, { moves: r.moves, ptsKey: 'week_pts', subKey: 'ytd_avg' }),
+      e(MovesList, { moves: r.moves, ptsKey: 'week_pts', subKey: 'ytd_avg', title: `🔄 ${r.moves.length} move${r.moves.length === 1 ? '' : 's'}` }),
     )),
-    hasUpgrades.length > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginBottom: 10 } },
+    hasUpgrades.length > 0 && e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 10, lineHeight: 1.4 } },
       data.weeks_completed > 0
-        ? `Shown as week projection · season average ± std dev per game played (GP). Recommendations use the LOWER of the two (conservative floor); players with 0 GP use projection only.`
+        ? 'Floor = the lower of this week\'s projection and season average per game. Recommendations are ranked on floor; players with 0 games use projection only.'
         : 'No completed weeks yet — recommendations use week projections only.'),
     optimal.length > 0 && e(Card, { borderColor: 'var(--accent)' },
       e('div', { style: { fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontWeight: 700 } }, `✅ Already Optimal (${optimal.length})`),
@@ -1918,7 +1932,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.20')
+        e('span', { className: 'app-version' }, 'v10.21')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

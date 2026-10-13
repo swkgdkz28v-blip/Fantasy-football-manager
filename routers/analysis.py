@@ -3031,3 +3031,62 @@ async def get_ir_eligible(req: UserRequest):
         "note": "Eligibility uses each league's IR rules (Sleeper default: IR and PUP only; some leagues also allow OUT, SUS, NA, COV or Doubtful). "
                 "'Not eligible' lists OUT/other players the league won't let you stash, so you can decide to hold or drop.",
     }
+
+
+# ── POWER RANKINGS (all my teams, best → worst) ──────────────────────────────
+
+@router.post("/analysis/power-rankings")
+async def get_power_rankings(req: UserRequest):
+    """Every league's team ordered by how it is performing: a blend of record (win %, with a
+    points-based adjustment so 'lucky' records don't over-rank) and roster rating (Juggernaut → Rebuild)."""
+    user, season, current_week, evals = await _evaluate_all(req.username, req.week)
+    rows = []
+    for league, team, ev in evals:
+        gp = ev["games_played"]
+        # Record component: win% blended toward points-based expected win% early in the season
+        pyth = ev.get("pyth_win_pct")
+        if pyth is None and ev["fpts"] > 0 and ev["fpa"] > 0:
+            pyth = ev["fpts"] ** 2.37 / (ev["fpts"] ** 2.37 + ev["fpa"] ** 2.37)
+        rec_pct = ev["win_pct"] if gp else 0.5
+        if pyth is not None and gp:
+            w = min(gp / 6.0, 1.0)             # trust the raw record fully after ~6 games
+            rec_pct = w * ev["win_pct"] + (1 - w) * (0.5 * ev["win_pct"] + 0.5 * pyth)
+        record_score = 100 * rec_pct
+        roster_score = 100 * (ev["roster_composite"] - 1) / 4      # composite runs 1..5 → 0..100
+        standing_score = 100 * (1 - (ev["rank"] - 1) / max(ev["total_teams"] - 1, 1))
+        if gp == 0:
+            score = roster_score
+        else:
+            score = 0.5 * record_score + 0.35 * roster_score + 0.15 * standing_score
+        rows.append({
+            "league": league["name"], "team": team,
+            "record": f"{ev['wins']}-{ev['losses']}" + (f"-{ev['ties']}" if ev["ties"] else ""),
+            "win_pct": round(ev["win_pct"], 3), "games_played": gp,
+            "rank": ev["rank"], "total_teams": ev["total_teams"], "in_playoffs": ev["in_playoffs"],
+            "tier": ev["roster_tier"], "tier_color": ev["roster_tier_color"], "tier_icon": ev["roster_tier_icon"],
+            "roster_composite": ev["roster_composite"], "blended_tier": ev["tier"],
+            "pf": round(ev["fpts"], 1), "pa": round(ev["fpa"], 1), "pts_vs_avg": ev["pts_vs_avg"],
+            "score": round(score, 1), "record_score": round(record_score, 1), "roster_score": round(roster_score, 1),
+            "standing_score": round(standing_score, 1),
+        })
+    rows.sort(key=lambda r: (-r["score"], -r["win_pct"], -r["roster_composite"], r["league"]))
+    for i, r in enumerate(rows, start=1):
+        r["power_rank"] = i
+    n = len(rows)
+    tiers = {}
+    for r in rows:
+        tiers[r["tier"]] = tiers.get(r["tier"], 0) + 1
+    return {
+        "week": current_week,
+        "summary": {
+            "leagues": n,
+            "top": rows[0] if rows else None, "bottom": rows[-1] if rows else None,
+            "avg_score": round(sum(r["score"] for r in rows) / n, 1) if n else 0,
+            "tiers": tiers,
+            "above_500": sum(1 for r in rows if r["win_pct"] > 0.5),
+            "in_playoff_spot": sum(1 for r in rows if r["in_playoffs"]),
+        },
+        "results": rows,
+        "note": "Score = 50% record (win %, nudged toward points-based expectation early in the year) + 35% roster rating "
+                "(Juggernaut → Rebuild composite) + 15% league standing. Before week 1 it is roster rating only.",
+    }

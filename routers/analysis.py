@@ -75,6 +75,11 @@ class WeekRequest(BaseModel):
     username: str
     week: int
 
+class UserPlayerRequest(BaseModel):
+    username: str
+    player_name: str
+    week: Optional[int] = None
+
 # ── HEALTH ────────────────────────────────────────────────────────────────────
 
 @router.get("/health")
@@ -3089,4 +3094,85 @@ async def get_power_rankings(req: UserRequest):
         "results": rows,
         "note": "Score = 50% record (win %, nudged toward points-based expectation early in the year) + 35% roster rating "
                 "(Juggernaut → Rebuild composite) + 15% league standing. Before week 1 it is roster rating only.",
+    }
+
+
+# ── PLAYER LOOKUP (where do I own him, starting or benched?) ─────────────────
+
+@router.post("/analysis/player-lookup")
+async def get_player_lookup(req: UserPlayerRequest):
+    """Find a player by name and list every league where the user rosters him, with his role this
+    week (starter slot / bench / IR / taxi), plus leagues where this week's opponent starts him."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+    q = " ".join((req.player_name or "").lower().split())
+    if not q:
+        raise HTTPException(status_code=400, detail="Enter a player name.")
+
+    # Match: exact full name first, then substring on full/last name; prefer active players on a team
+    POS = {"QB", "RB", "WR", "TE", "K", "DEF"}
+    def nm(p): return player_name(p).lower()
+    exact = [(pid, p) for pid, p in players_db.items() if p.get("position") in POS and nm(p) == q]
+    cands = exact or [(pid, p) for pid, p in players_db.items() if p.get("position") in POS and (q in nm(p) or q == (p.get("last_name") or "").lower())]
+    cands.sort(key=lambda t: (not t[1].get("team"), (t[1].get("status") or "") != "Active", nm(t[1])))
+    if not cands:
+        raise HTTPException(status_code=404, detail=f"No player matching '{req.player_name}'.")
+    active = [c for c in cands if c[1].get("team")] or cands
+    if len(active) > 1 and not exact:
+        return {"ambiguous": True, "query": req.player_name,
+                "matches": [{"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team") or "FA"} for pid, p in active[:12]],
+                "note": "Several players match — type the full name."}
+    pid, p = active[0]
+    player = {"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team") or "FA",
+              "injury_status": p.get("injury_status"), "age": p.get("age"), "years_exp": p.get("years_exp")}
+
+    all_rosters, all_users, all_matchups = await asyncio.gather(
+        asyncio.gather(*[get_rosters(lg["league_id"]) for lg in leagues]),
+        asyncio.gather(*[get_league_users(lg["league_id"]) for lg in leagues]),
+        asyncio.gather(*[get_matchups(lg["league_id"], week) for lg in leagues]),
+    )
+    owned, against, elsewhere, available = [], [], [], []
+    for league, rosters, league_users, matchups in zip(leagues, all_rosters, all_users, all_matchups):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        users = {u["user_id"]: u for u in league_users}
+        tname = lambda r: (users.get(r.get("owner_id")) or {}).get("metadata", {}).get("team_name") or (users.get(r.get("owner_id")) or {}).get("display_name") or f"Team {r['roster_id']}"
+        holder = next((r for r in rosters if pid in {str(x) for x in (r.get("players") or [])}), None)
+        my_m = next((m for m in matchups if m["roster_id"] == my["roster_id"]), None)
+        if holder is None:
+            available.append({"league": league["name"], "team": tname(my)})
+            continue
+        if holder["roster_id"] == my["roster_id"]:
+            starters = [str(x) for x in ((my_m or my).get("starters") or [])]
+            slots = [x for x in league.get("roster_positions", []) if x not in ("BN", "IR", "TAXI")]
+            if pid in {str(x) for x in (my.get("reserve") or [])}:
+                role, slot = "IR", None
+            elif pid in {str(x) for x in (my.get("taxi") or [])}:
+                role, slot = "TAXI", None
+            elif pid in starters:
+                i = starters.index(pid); role, slot = "STARTER", (slots[i] if i < len(slots) else "?")
+            else:
+                role, slot = "BENCH", None
+            owned.append({"league": league["name"], "team": tname(my), "role": role, "slot": slot,
+                          "pts": float(((my_m or {}).get("players_points") or {}).get(pid, 0) or 0)})
+        else:
+            opp_m = next((m for m in matchups if my_m and m.get("matchup_id") == my_m.get("matchup_id") and m["roster_id"] != my["roster_id"]), None)
+            is_opp = bool(opp_m and opp_m["roster_id"] == holder["roster_id"])
+            starts = pid in {str(x) for x in ((opp_m or holder).get("starters") or [])}
+            row = {"league": league["name"], "team": tname(my), "owner": tname(holder), "starting": starts}
+            (against if is_opp else elsewhere).append(row)
+
+    role_order = {"STARTER": 0, "BENCH": 1, "TAXI": 2, "IR": 3}
+    owned.sort(key=lambda r: (role_order[r["role"]], r["league"]))
+    return {
+        "week": week, "player": player,
+        "summary": {"leagues": len(leagues), "owned": len(owned),
+                    "starting": sum(1 for r in owned if r["role"] == "STARTER"),
+                    "bench": sum(1 for r in owned if r["role"] == "BENCH"),
+                    "taxi": sum(1 for r in owned if r["role"] == "TAXI"),
+                    "ir": sum(1 for r in owned if r["role"] == "IR"),
+                    "against": len(against), "available": len(available), "elsewhere": len(elsewhere)},
+        "owned": owned, "against": against, "available": available, "elsewhere": elsewhere,
     }

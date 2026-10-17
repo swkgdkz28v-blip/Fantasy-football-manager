@@ -1652,6 +1652,49 @@ function PowerRankingsView({ data }) {
   );
 }
 
+// ── PLAYER LOOKUP VIEW ────────────────────────────────────────────────────────
+function PlayerLookupView({ data }) {
+  if (!data) return null;
+  if (data.ambiguous) return e(Card, { borderColor: 'var(--accent3)' },
+    e('div', { style: { fontSize: 12, marginBottom: 8 } }, `Several players match "${data.query}" — enter the full name:`),
+    data.matches.map(m => e('div', { key: m.id, className: 'player-row' }, e(PosBadge, { pos: m.position }), e('span', { className: 'player-name' }, m.name), e('span', { className: 'player-team' }, m.team))));
+  const p = data.player, sm = data.summary || {};
+  const ROLE = { STARTER: ['var(--accent)', '▲ STARTING'], BENCH: ['var(--accent3)', '▼ BENCH'], TAXI: ['var(--accent4)', '🚕 TAXI'], IR: ['var(--accent2)', '🏥 IR'] };
+  const line = (r, right, color) => e('div', { key: r.league, style: { display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, padding: '6px 0', borderBottom: '1px solid var(--border)' } },
+    e('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } }, r.league, e('span', { style: { color: 'var(--text3)', fontSize: 10 } }, ` · ${r.team}`)),
+    e('span', { style: { whiteSpace: 'nowrap', fontWeight: 700, color } }, right));
+  return e('div', null,
+    e(Card, null,
+      e('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+        e(PosBadge, { pos: p.position }),
+        e('div', { style: { flex: 1 } },
+          e('div', { style: { fontSize: 18, fontWeight: 800 } }, p.name),
+          e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, `${p.team}${p.age ? ` · age ${p.age}` : ''}${p.years_exp != null ? ` · ${p.years_exp} yr${p.years_exp === 1 ? '' : 's'}` : ''}`)),
+        p.injury_status && e(Tag, { color: 'red' }, p.injury_status.toUpperCase()))
+    ),
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.owned ?? 0, label: `Owned (of ${sm.leagues})`, color: 'var(--text)' }),
+      e(StatTile, { value: sm.starting ?? 0, label: 'Starting', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.bench ?? 0, label: 'Benched', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.against ?? 0, label: 'Against You', color: 'var(--accent2)' })
+    ),
+    (sm.taxi > 0 || sm.ir > 0) && e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 10 } }, `${sm.taxi ? `${sm.taxi} on taxi` : ''}${sm.taxi && sm.ir ? ' · ' : ''}${sm.ir ? `${sm.ir} on IR` : ''}`),
+    data.owned.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 6 } }, `Your leagues (${data.owned.length}) · week ${data.week}`),
+      data.owned.map(r => line(r, `${ROLE[r.role][1]}${r.slot ? ` · ${r.slot}` : ''}`, ROLE[r.role][0]))),
+    data.owned.length === 0 && e(Alert, { type: 'info' }, e('p', null, `You don't roster ${p.name} in any league.`)),
+    data.against.length > 0 && e(Card, { borderColor: 'var(--accent2)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent2)', marginBottom: 6 } }, `Playing against you this week (${data.against.length})`),
+      data.against.map(r => line(r, `${r.owner} · ${r.starting ? 'starting' : 'benched'}`, r.starting ? 'var(--accent2)' : 'var(--text3)'))),
+    data.available.length > 0 && e(Card, { borderColor: 'var(--accent4)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent4)', marginBottom: 6 } }, `Free agent in (${data.available.length})`),
+      e('div', { style: { fontSize: 11, color: 'var(--text2)', lineHeight: 1.6 } }, data.available.map(r => r.league).join(' · '))),
+    data.elsewhere.length > 0 && e('details', { style: { marginTop: 8 } },
+      e('summary', { style: { fontSize: 11, color: 'var(--text3)', cursor: 'pointer' } }, `Owned by someone else in ${data.elsewhere.length} league${data.elsewhere.length === 1 ? '' : 's'}`),
+      data.elsewhere.map(r => line(r, r.owner, 'var(--text3)')))
+  );
+}
+
 // ── SEASON FORECAST VIEW ──────────────────────────────────────────────────────
 function SeasonForecastView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
@@ -1784,6 +1827,7 @@ const SECTIONS = [
       { id: 'theres-a-chance', label: '🎲 There\'s A Chance', endpoint: '/analysis/theres-a-chance' },
       { id: 'rooting-guide', label: '📣 Rooting Guide', endpoint: '/analysis/rooting-guide' },
       { id: 'season-records', label: '📒 Season Records', endpoint: '/analysis/season-records' },
+      { id: 'player-lookup', label: '🔎 Player Lookup', endpoint: '/analysis/player-lookup', needsPlayer: true },
     ]
   },
   {
@@ -1882,6 +1926,7 @@ function MobileAccordion({ sections, active, onRun }) {
 function App() {
   const [username, setUsername] = useState('');
   const [leagueName, setLeagueName] = useState('');
+  const [playerName, setPlayerName] = useState('');
   const [week, setWeek] = useState('');
   const [active, setActive] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1893,6 +1938,7 @@ function App() {
     if (!username) { setError('Please enter a username'); return; }
     if (feature.needsWeek && !week) { setError('Please enter a week number'); return; }
     if (feature.needsLeague && !leagueName) { setError('Enter the League Name (exact or partial) for a deep dive'); return; }
+    if (feature.needsPlayer && !playerName) { setError('Enter a Player Name for the lookup'); return; }
     setActive(feature.id);
     setLoading(true);
     setError(null);
@@ -1902,6 +1948,7 @@ function App() {
       const body = { username };
       if (week) body.week = parseInt(week);
       if (leagueName) body.league_name = leagueName;
+      if (feature.needsPlayer) body.player_name = playerName;
       const data = await API.post(feature.endpoint, body);
       setResult({ feature, data });
     } catch(err) {
@@ -1909,7 +1956,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [username, week, leagueName]);
+  }, [username, week, leagueName, playerName]);
 
   const renderResult = () => {
     if (!result) return e('div', { className: 'empty' }, 'Select a feature from the sidebar to get started.');
@@ -1963,6 +2010,8 @@ function App() {
         return e(IrEligibleView, { data });
       case 'power-rankings':
         return e(PowerRankingsView, { data });
+      case 'player-lookup':
+        return e(PlayerLookupView, { data });
       default:
         return e(GenericView, { data, title: feature.label });
     }
@@ -1975,7 +2024,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.22')
+        e('span', { className: 'app-version' }, 'v10.23')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),
@@ -1993,6 +2042,10 @@ function App() {
       e('div', { className: 'config-field' },
         e('label', null, 'League Name (deep dive)'),
         e('input', { value: leagueName, onChange: ev => setLeagueName(ev.target.value), placeholder: 'exact league name' })
+      ),
+      e('div', { className: 'config-field' },
+        e('label', null, 'Player Name (lookup)'),
+        e('input', { value: playerName, onChange: ev => setPlayerName(ev.target.value), placeholder: 'e.g. Bijan Robinson' })
       )
     ),
 

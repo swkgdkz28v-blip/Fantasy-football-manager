@@ -3176,3 +3176,256 @@ async def get_player_lookup(req: UserPlayerRequest):
                     "against": len(against), "available": len(available), "elsewhere": len(elsewhere)},
         "owned": owned, "against": against, "available": available, "elsewhere": elsewhere,
     }
+
+
+# ── TRADE FINDER (acquire a specific player) ──────────────────────────────────
+
+def _age_mult(pos, age, superflex):
+    """Dynasty age curve per position. Returns a multiplier on per-game production."""
+    a = age or 27
+    if pos == "RB":
+        m = 1.15 if a <= 24 else 1.0 if a <= 26 else 0.85 if a == 27 else 0.7 if a == 28 else 0.55 if a == 29 else 0.4
+    elif pos == "WR":
+        m = 1.15 if a <= 24 else 1.0 if a <= 28 else 0.9 if a == 29 else 0.8 if a == 30 else 0.65 if a == 31 else 0.5
+    elif pos == "TE":
+        m = 1.1 if a <= 25 else 1.0 if a <= 29 else 0.85 if a == 30 else 0.7
+    elif pos == "QB":
+        m = 1.1 if a <= 26 else 1.0 if a <= 32 else 0.85 if a <= 35 else 0.65
+        if superflex:
+            m *= 1.3
+    else:
+        m = 0.3   # K / DEF carry little dynasty value
+    return m
+
+
+def _dyn_value(ppg, pos, age, superflex):
+    """Dynasty trade value: production × age curve, convexed so studs > two average players."""
+    base = max(ppg, 0) * _age_mult(pos, age, superflex)
+    return round(base ** 1.3, 1)
+
+
+def _owned_picks(roster_id, rosters, traded_picks, season, draft_rounds, seasons_ahead=2):
+    """Future picks a roster holds: its own unless traded away, plus any acquired."""
+    picks = []
+    for yr in range(1, seasons_ahead + 1):
+        yr_s = str(int(season) + yr)
+        for rnd in range(1, draft_rounds + 1):
+            for r in rosters:
+                orig = r["roster_id"]
+                owner = orig
+                for tp in traded_picks:
+                    if str(tp.get("season")) == yr_s and tp.get("round") == rnd and tp.get("roster_id") == orig:
+                        owner = tp.get("owner_id")
+                if owner == roster_id:
+                    picks.append({"season": yr_s, "round": rnd, "original_roster": orig, "years_out": yr})
+    return picks
+
+
+@router.post("/analysis/trade-finder")
+async def get_trade_finder(req: UserPlayerRequest):
+    """For every league where another manager owns the named player, build two trade offers from the
+    user's assets (players + future picks, up to 4-for-1) that the other side would plausibly accept:
+    value parity with a premium, aimed at their roster needs and their contender/rebuild posture."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+    weeks_completed = max(0, min(week - 1, current_week - 1))
+    PROTECT = 3
+    MAX_ASSETS = 4
+
+    q = " ".join((req.player_name or "").lower().split())
+    if not q:
+        raise HTTPException(status_code=400, detail="Enter a player name.")
+    POS = {"QB", "RB", "WR", "TE", "K", "DEF"}
+    nm = lambda p: player_name(p).lower()
+    exact = [(pid, p) for pid, p in players_db.items() if p.get("position") in POS and nm(p) == q]
+    cands = exact or [(pid, p) for pid, p in players_db.items() if p.get("position") in POS and (q in nm(p) or q == (p.get("last_name") or "").lower())]
+    cands.sort(key=lambda t: (not t[1].get("team"), (t[1].get("status") or "") != "Active", nm(t[1])))
+    if not cands:
+        raise HTTPException(status_code=404, detail=f"No player matching '{req.player_name}'.")
+    active = [c for c in cands if c[1].get("team")] or cands
+    if len(active) > 1 and not exact:
+        return {"ambiguous": True, "query": req.player_name,
+                "matches": [{"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team") or "FA"} for pid, p in active[:12]]}
+    tpid, tp = active[0]
+    target = {"id": tpid, "name": player_name(tp), "position": tp.get("position"), "team": tp.get("team") or "FA",
+              "age": tp.get("age"), "injury_status": tp.get("injury_status")}
+
+    proj_array, weekly_by_player = await asyncio.gather(get_projections(season, week), _weekly_stats_by_player(season, weeks_completed))
+    all_rosters, all_users, all_traded = await asyncio.gather(
+        asyncio.gather(*[get_rosters(lg["league_id"]) for lg in leagues]),
+        asyncio.gather(*[get_league_users(lg["league_id"]) for lg in leagues]),
+        asyncio.gather(*[get_traded_picks(lg["league_id"]) for lg in leagues]),
+    )
+
+    results, no_offer, free_agent, mine = [], [], [], []
+    for league, rosters, league_users, traded in zip(leagues, all_rosters, all_users, all_traded):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        users = {u["user_id"]: u for u in league_users}
+        tname = lambda r: (users.get(r.get("owner_id")) or {}).get("metadata", {}).get("team_name") or (users.get(r.get("owner_id")) or {}).get("display_name") or f"Team {r['roster_id']}"
+        holder = next((r for r in rosters if tpid in {str(x) for x in (r.get("players") or [])}), None)
+        if holder is None:
+            free_agent.append({"league": league["name"], "team": tname(my)}); continue
+        if holder["roster_id"] == my["roster_id"]:
+            mine.append({"league": league["name"], "team": tname(my)}); continue
+
+        ss = league.get("scoring_settings") or {}
+        proj_map = build_proj_map(proj_array, ss)
+        slots = [x for x in league.get("roster_positions", []) if x not in ("BN", "IR", "TAXI")]
+        superflex = "SUPER_FLEX" in slots
+        draft_rounds = int((league.get("settings") or {}).get("draft_rounds") or 4)
+
+        def ppg(pid):
+            avg, sd, gp, _ = _season_line(weekly_by_player.get(pid), ss)
+            proj = proj_map.get(pid, 0)
+            return 0.5 * proj + 0.5 * avg if gp >= 2 else proj
+        def pl(pid):
+            p = players_db.get(pid)
+            if not p or p.get("position") not in POS:
+                return None
+            v = _dyn_value(ppg(pid), p["position"], p.get("age"), superflex)
+            return {"type": "player", "id": pid, "name": player_name(p), "position": p["position"], "team": p.get("team") or "FA",
+                    "age": p.get("age"), "ppg": round(ppg(pid), 1), "value": v, "injury_status": p.get("injury_status")}
+
+        # League-wide value distribution → pick values + position baselines
+        all_vals = sorted([x["value"] for r in rosters for pid in (r.get("players") or []) if (x := pl(str(pid)))], reverse=True)
+        def pct(pq):
+            if not all_vals: return 0
+            return all_vals[min(int(len(all_vals) * (1 - pq)), len(all_vals) - 1)]
+        pick_val = {1: pct(0.80), 2: pct(0.55), 3: pct(0.35), 4: pct(0.20)}
+        def pick_value(pk):
+            base = pick_val.get(pk["round"], pct(0.1))
+            return round(base * (0.85 ** (pk["years_out"] - 1)), 1)
+
+        # Their side: tier, needs, their lineup value at each position
+        their_ev = _evaluate_league(league, holder, rosters, traded, players_db, proj_map, season, current_week)
+        their_players = [x for pid in (holder.get("players") or []) if (x := pl(str(pid)))]
+        their_players.sort(key=lambda x: -x["value"])
+        tgt = next((x for x in their_players if x["id"] == tpid), None) or pl(tpid)
+        target_value = tgt["value"]
+        their_top3 = {x["id"] for x in their_players[:3]}
+        # position needs: how many startable they have vs how many they need to start
+        def pos_demand(pos):
+            ded = sum(1 for sl in slots if sl == pos)
+            flex = sum(1 / len(SLOT_ELIGIBILITY[sl]) for sl in slots if sl in SLOT_ELIGIBILITY and len(SLOT_ELIGIBILITY[sl]) > 1 and pos in SLOT_ELIGIBILITY[sl] and sl != "SUPER_FLEX")
+            if pos == "QB" and superflex: flex += 1.0
+            return ded + int(flex + 0.5)
+        lg_pos_vals = {}
+        for r in rosters:
+            for pid in (r.get("players") or []):
+                x = pl(str(pid))
+                if x: lg_pos_vals.setdefault(x["position"], []).append(x["value"])
+        def startable_cut(pos):  # value of the Nth best at that position league-wide, N = teams × demand
+            vals = sorted(lg_pos_vals.get(pos, []), reverse=True)
+            n = max(len(rosters) * max(pos_demand(pos), 1) - 1, 0)
+            return vals[min(n, len(vals) - 1)] if vals else 0
+        def need_of(roster_players, pos, exclude=set()):
+            have = sum(1 for x in roster_players if x["position"] == pos and x["id"] not in exclude and x["value"] >= startable_cut(pos))
+            return pos_demand(pos) - have      # >0 short, <0 surplus
+        their_need = {pos: need_of(their_players, pos, exclude={tpid}) for pos in ("QB", "RB", "WR", "TE")}
+        rebuild = their_ev["roster_tier"] in ("Rebuild", "Fringe")
+        contender = their_ev["roster_tier"] in ("Juggernaut", "Contender")
+
+        # My side: assets
+        my_players = [x for pid in (my.get("players") or []) if (x := pl(str(pid))) and x["position"] in ("QB", "RB", "WR", "TE")]
+        my_players.sort(key=lambda x: -x["value"])
+        protected = {x["id"] for x in my_players[:PROTECT]}
+        tgt_v_for_pool = (next((x for x in their_players if x["id"] == tpid), None) or pl(tpid))["value"]
+        # candidates closest in value to the target (so cheap targets get cheap offers), not just my best players
+        tradeable = sorted([x for x in my_players if x["id"] not in protected and (x["injury_status"] or "").upper() not in ("IR", "PUP", "OUT")],
+                           key=lambda x: abs(x["value"] - tgt_v_for_pool))[:14]
+        my_picks = [{"type": "pick", "id": f"pick-{pk['season']}-{pk['round']}-{pk['original_roster']}",
+                     "name": f"{pk['season']} Round {pk['round']}" + ("" if pk["original_roster"] == my["roster_id"] else f" (via {tname(next(r for r in rosters if r['roster_id'] == pk['original_roster']))})"),
+                     "round": pk["round"], "season": pk["season"], "years_out": pk["years_out"], "value": pick_value(pk)}
+                    for pk in _owned_picks(my["roster_id"], rosters, traded, season, min(draft_rounds, 4))]
+        my_picks.sort(key=lambda x: -x["value"])
+        my_picks = my_picks[:6]
+        my_need_after = lambda sent_ids: {pos: need_of(my_players, pos, exclude=sent_ids) for pos in ("QB", "RB", "WR", "TE")}
+        my_need_before = my_need_after(set())
+
+        premium = 1.05 + (0.10 if tpid in their_top3 else 0) - (0.03 if their_need.get(target["position"], 0) < 0 else 0)
+        lo, hi = target_value * premium, target_value * premium * 1.18
+
+        from itertools import combinations
+        assets = [a for a in tradeable if a["value"] >= 1.0] + my_picks   # no zero-value throw-ins
+        offers = []
+        for k in range(1, MAX_ASSETS + 1):
+            for combo in combinations(assets, k):
+                sv = sum(a["value"] for a in combo)
+                if sv < lo * 0.97 or sv > hi * 1.05:
+                    continue
+                players_sent = [a for a in combo if a["type"] == "player"]
+                picks_sent = [a for a in combo if a["type"] == "pick"]
+                # quality rule: no quantity-for-quality dumps — best piece ≥ 45% of target (picks-only exempt for rebuilders)
+                best_piece = max(a["value"] for a in combo)
+                if players_sent and best_piece < 0.45 * target_value:
+                    continue
+                if not players_sent and not rebuild and k > 2:
+                    continue
+                # my lineup rule: don't drop below demand at any position (target joins my roster)
+                sent_ids = {a["id"] for a in players_sent}
+                after = my_need_after(sent_ids)
+                after[target["position"]] = after.get(target["position"], 0) - (1 if tgt["value"] >= startable_cut(target["position"]) else 0)
+                # the trade must not make any position shortage worse than it already is
+                if any(after[pos] > max(my_need_before[pos], 0) for pos in after):
+                    continue
+                # fit score
+                fit = 0.0
+                for a in players_sent:
+                    n = their_need.get(a["position"], 0)
+                    fit += 1.0 if n > 0 else -0.6 if n < -1 else 0.1
+                    if contender and a["value"] >= startable_cut(a["position"]): fit += 0.4
+                    if rebuild and (a["age"] or 30) <= 25: fit += 0.4
+                    if rebuild and (a["age"] or 0) >= 28: fit -= 0.5
+                for a in picks_sent:
+                    fit += (0.9 if rebuild else 0.2 if contender else 0.5) * (1.2 if a["round"] == 1 else 0.8)
+                parity = sv / target_value
+                over = max(parity - premium, 0)
+                score = fit - 1.5 * over - 0.25 * (k - 1) + (0.3 if lo <= sv <= hi else 0)
+                offers.append({"assets": list(combo), "send_value": round(sv, 1), "ratio": round(parity, 2), "fit": round(fit, 2),
+                               "score": round(score, 2), "has_pick": bool(picks_sent), "n": k})
+        if not offers:
+            no_offer.append({"league": league["name"], "team": tname(my), "owner": tname(holder), "target_value": target_value,
+                             "reason": "can't reach value without touching your protected top 3" if tradeable or my_picks else "no tradeable assets"})
+            continue
+        offers.sort(key=lambda o: -o["score"])
+        o1 = offers[0]
+        # second offer: a different shape — include a pick if the first didn't (or vice-versa), else next-best distinct set
+        ids1 = {a["id"] for a in o1["assets"]}
+        distinct = [o for o in offers if not ids1 <= {a["id"] for a in o["assets"]} and not {a["id"] for a in o["assets"]} <= ids1]
+        alt = [o for o in distinct if o["has_pick"] != o1["has_pick"]] or distinct
+        o2 = alt[0] if alt else None
+        def why(o):
+            bits = []
+            needs = [a["position"] for a in o["assets"] if a["type"] == "player" and their_need.get(a["position"], 0) > 0]
+            if needs: bits.append(f"fills their {'/'.join(sorted(set(needs)))} need")
+            if any(a["type"] == "pick" for a in o["assets"]): bits.append("picks suit a rebuilder" if rebuild else "pick sweetener")
+            bits.append(f"{int(round(o['ratio'] * 100))}% of his value")
+            return " · ".join(bits)
+        def grade(o):
+            return "A" if o["score"] >= 2.0 else "B" if o["score"] >= 1.0 else "C" if o["score"] >= 0.3 else "D"
+        fmt = lambda o: o and {**o, "why": why(o), "grade": grade(o)}
+        results.append({
+            "league": league["name"], "team": tname(my), "owner": tname(holder),
+            "owner_tier": their_ev["roster_tier"], "owner_tier_color": their_ev["roster_tier_color"], "owner_record": f"{their_ev['wins']}-{their_ev['losses']}",
+            "target_value": target_value, "target_ppg": tgt["ppg"], "target_is_their_top3": tpid in their_top3,
+            "their_need_at_pos": their_need.get(target["position"], 0), "superflex": superflex,
+            "premium": round(premium, 2), "ask_range": [round(lo, 1), round(hi, 1)],
+            "offers": [fmt(o1)] + ([fmt(o2)] if o2 else []),
+            "protected": [x["name"] for x in my_players[:PROTECT]],
+            "feasibility": o1["score"],
+        })
+
+    results.sort(key=lambda r: -r["feasibility"])
+    return {
+        "week": week, "player": target,
+        "summary": {"leagues": len(leagues), "offers_built": len(results), "no_offer": len(no_offer), "free_agent": len(free_agent), "already_mine": len(mine),
+                    "a_grade": sum(1 for r in results if r["offers"][0]["grade"] == "A")},
+        "results": results, "no_offer": no_offer, "free_agent": free_agent, "mine": mine,
+        "note": "Values = league-scored per-game production × a dynasty age curve (QBs boosted in superflex), convexed so stars outweigh depth. "
+                "Picks are priced off that league's player value distribution (1st ≈ 80th percentile player, discounted 15%/yr out). "
+                "Offers send 105–120%+ of his value (more if he's their top-3), favor positions they're short at, respect your top-3 protect list, "
+                "never leave you short at a position, and cap at 4-for-1.",
+    }

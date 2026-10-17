@@ -1695,6 +1695,63 @@ function PlayerLookupView({ data }) {
   );
 }
 
+// ── TRADE FINDER VIEW ─────────────────────────────────────────────────────────
+function TradeFinderView({ data }) {
+  if (!data) return null;
+  if (data.ambiguous) return e(Card, { borderColor: 'var(--accent3)' },
+    e('div', { style: { fontSize: 12, marginBottom: 8 } }, `Several players match "${data.query}" — enter the full name:`),
+    data.matches.map(m => e('div', { key: m.id, className: 'player-row' }, e(PosBadge, { pos: m.position }), e('span', { className: 'player-name' }, m.name), e('span', { className: 'player-team' }, m.team))));
+  const p = data.player, sm = data.summary || {};
+  const GRADE = { A: 'var(--accent)', B: 'var(--accent4)', C: 'var(--accent3)', D: 'var(--accent2)' };
+  const asset = a => e('div', { key: a.id, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border)' } },
+    a.type === 'pick' ? e('span', { className: 'pos', style: { background: 'rgba(255,179,71,0.15)', color: 'var(--accent3)' } }, 'PICK') : e(PosBadge, { pos: a.position }),
+    e('div', { style: { flex: 1, minWidth: 0 } },
+      e('div', { style: { fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, a.name),
+      a.type === 'player' && e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${a.team}${a.age ? ` · age ${a.age}` : ''} · ${a.ppg} ppg`)),
+    e('span', { style: { fontSize: 12, fontWeight: 700, color: 'var(--text2)' } }, a.value));
+  const offer = (o, i) => e('div', { key: i, style: { padding: '10px 12px', background: 'var(--surface2, var(--surface))', border: `1px solid ${GRADE[o.grade]}`, borderRadius: 10, marginBottom: 8 } },
+    e('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 } },
+      e('span', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)' } }, `Offer ${i + 1} · ${o.has_pick ? 'with pick' : 'players'} · ${o.n}-for-1`),
+      e('span', { style: { fontSize: 14, fontWeight: 800, color: GRADE[o.grade] } }, `Grade ${o.grade}`)),
+    o.assets.map(asset),
+    e('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: 11, marginTop: 6, color: 'var(--text2)' } },
+      e('span', null, o.why), e('span', { style: { fontWeight: 700 } }, `${o.send_value} (${o.ratio}×)`)));
+  return e('div', null,
+    e(Card, null,
+      e('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+        e(PosBadge, { pos: p.position }),
+        e('div', { style: { flex: 1 } },
+          e('div', { style: { fontSize: 18, fontWeight: 800 } }, `Acquire ${p.name}`),
+          e('div', { style: { fontSize: 11, color: 'var(--text2)' } }, `${p.team}${p.age ? ` · age ${p.age}` : ''}`)),
+        p.injury_status && e(Tag, { color: 'red' }, p.injury_status.toUpperCase()))),
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.offers_built ?? 0, label: 'Leagues w/ Offers', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.a_grade ?? 0, label: 'A-Grade', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.no_offer ?? 0, label: 'No Realistic Offer', color: 'var(--accent2)' }),
+      e(StatTile, { value: `${sm.free_agent ?? 0} / ${sm.already_mine ?? 0}`, label: 'FA / Already Yours', color: 'var(--text3)' })
+    ),
+    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 12 } }, 'Most feasible league first. Values are league-specific dynasty values (production × age curve); a pick’s value is set by that league’s player pool.'),
+    data.results.map(r => e(Card, { key: r.league, borderColor: GRADE[r.offers[0].grade] },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), e('div', { className: 'card-subtitle' }, `${r.team} → ${r.owner}`)),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontSize: 12, fontWeight: 700, color: r.owner_tier_color } }, `${r.owner_tier} · ${r.owner_record}`),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `his value ${r.target_value}${r.target_is_their_top3 ? ' · their top-3' : ''}`))),
+      e('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 8 } },
+        `They are ${r.their_need_at_pos > 0 ? `short ${r.their_need_at_pos} at` : r.their_need_at_pos < 0 ? `${-r.their_need_at_pos} deep at` : 'even at'} ${p.position}${r.superflex ? ' · superflex' : ''} · ask ${r.ask_range[0]}–${r.ask_range[1]} (${Math.round(r.premium * 100)}% premium)`),
+      r.offers.map(offer),
+      e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `Protected (never offered): ${r.protected.join(', ')}`)
+    )),
+    data.no_offer?.length > 0 && e(Card, { borderColor: 'var(--accent2)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent2)', marginBottom: 6 } }, `No realistic offer (${data.no_offer.length})`),
+      data.no_offer.map(r => e('div', { key: r.league, style: { fontSize: 11, padding: '4px 0', borderBottom: '1px solid var(--border)' } }, e('b', null, r.league), e('span', { style: { color: 'var(--text3)' } }, ` · ${r.owner} · ${r.reason}`)))),
+    (data.free_agent?.length > 0 || data.mine?.length > 0) && e('div', { style: { fontSize: 11, color: 'var(--text3)', marginTop: 8, lineHeight: 1.6 } },
+      data.free_agent?.length > 0 && e('div', null, `🆓 Free agent — just add him: ${data.free_agent.map(r => r.league).join(' · ')}`),
+      data.mine?.length > 0 && e('div', null, `✅ Already yours: ${data.mine.map(r => r.league).join(' · ')}`)),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
+  );
+}
+
 // ── SEASON FORECAST VIEW ──────────────────────────────────────────────────────
 function SeasonForecastView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
@@ -1859,6 +1916,7 @@ const SECTIONS = [
       { id: 'overview', label: '📊 Overview', endpoint: '/analysis/overview' },
       { id: 'tier-records', label: '🏁 Tier Records', endpoint: '/analysis/tier-records' },
       { id: 'deep-dive', label: '🔬 Team Deep Dive', endpoint: '/analysis/team-deep-dive', needsLeague: true },
+      { id: 'trade-finder', label: '🤝 Trade Finder', endpoint: '/analysis/trade-finder', needsPlayer: true },
 
     ]
   },
@@ -2012,6 +2070,8 @@ function App() {
         return e(PowerRankingsView, { data });
       case 'player-lookup':
         return e(PlayerLookupView, { data });
+      case 'trade-finder':
+        return e(TradeFinderView, { data });
       default:
         return e(GenericView, { data, title: feature.label });
     }
@@ -2024,7 +2084,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.23')
+        e('span', { className: 'app-version' }, 'v10.24')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),
@@ -2044,7 +2104,7 @@ function App() {
         e('input', { value: leagueName, onChange: ev => setLeagueName(ev.target.value), placeholder: 'exact league name' })
       ),
       e('div', { className: 'config-field' },
-        e('label', null, 'Player Name (lookup)'),
+        e('label', null, 'Player Name (lookup / trade)'),
         e('input', { value: playerName, onChange: ev => setPlayerName(ev.target.value), placeholder: 'e.g. Bijan Robinson' })
       )
     ),

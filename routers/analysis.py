@@ -14,7 +14,40 @@ SLOT_ELIGIBILITY = {
     "SUPER_FLEX": ["QB", "RB", "WR", "TE"],
     "REC_FLEX": ["WR", "TE"],
     "WRRB_FLEX": ["WR", "RB"],
+    "DL": ["DL"], "LB": ["LB"], "DB": ["DB"],
+    "IDP_FLEX": ["DL", "LB", "DB"],
 }
+
+ALL_POS = ("QB", "RB", "WR", "TE", "K", "DEF", "DL", "LB", "DB")
+ALL_POS_SET = set(ALL_POS)
+IDP_POS = ("DL", "LB", "DB")
+
+
+def positions_of(item) -> set:
+    """Every fantasy position a player (or a pool row with an 'id') can fill — multi-eligible IDPs
+    such as DL/LB count for both. Falls back to the row's own position."""
+    if not item:
+        return set()
+    db = get_cached(players_cache, "players") or {}
+    p = db.get(str(item.get("id"))) if item.get("id") is not None else None
+    fps = (p or {}).get("fantasy_positions") or item.get("fantasy_positions") or []
+    out = set(fps)
+    if item.get("position"):
+        out.add(item["position"])
+    return out
+
+
+def eligible_for(item, slot) -> bool:
+    return bool(positions_of(item) & set(SLOT_ELIGIBILITY.get(slot, [slot])))
+
+
+def league_positions(league) -> set:
+    """Positions this league actually starts (union of what its lineup slots accept)."""
+    out = set()
+    for sl in league.get("roster_positions") or []:
+        if sl not in ("BN", "IR", "TAXI"):
+            out |= set(SLOT_ELIGIBILITY.get(sl, [sl]))
+    return out
 
 NFL_TEAMS = {"ARI","ATL","BAL","BUF","CAR","CHI","CIN","CLE","DAL","DEN","DET","GB","HOU","IND","JAX","KC","LV","LAC","LAR",
              "MIA","MIN","NE","NO","NYG","NYJ","PHI","PIT","SEA","SF","TB","TEN","WAS"}
@@ -380,7 +413,7 @@ async def get_week_analysis(req: WeekRequest):
         optimal = []
         for slot in slots_sorted:
             eligible = SLOT_ELIGIBILITY.get(slot, [slot])
-            best = next((p for p in all_players if p.get("position") in eligible and p["id"] not in assigned), None)
+            best = next((p for p in all_players if eligible_for(p, slot) and p["id"] not in assigned), None)
             if best:
                 assigned.add(best["id"])
                 optimal.append({"slot": slot, "player": best})
@@ -828,7 +861,7 @@ def compute_lineup(starter_slots, starters_ordered, pool, has_played, key="pts")
             elig = SLOT_ELIGIBILITY.get(starter_slots[i], [starter_slots[i]])
             row = []
             for c in cands:
-                if c["position"] in elig:
+                if eligible_for(c, starter_slots[i]):
                     w = float(c.get(key, 0) or 0) * 10000.0
                     if current[i] and current[i]["id"] == c["id"]:
                         w += 1.0                  # stay-in-place tiebreak
@@ -972,11 +1005,12 @@ async def get_optimal_lineup(req: UserRequest):
 
         # ── Taxi players and free agents who out-project the optimal roster lineup ──
         FA_MIN_GAIN = 1.5
+        lg_pos = league_positions(league)
         rostered = {str(x) for r in rosters for x in (r.get("players") or [])}
         def ext(pid, pp, source):
             return {"id": pid, "name": player_name(pp), "position": pp.get("position"), "team": pp.get("team"),
                     "pts": round(proj_map.get(pid, 0), 1), "injury_status": pp.get("injury_status"), "source": source}
-        ok = lambda pid, pp: (pp.get("position") in ("QB", "RB", "WR", "TE", "K", "DEF") and pp.get("team")
+        ok = lambda pid, pp: (pp.get("position") in lg_pos and pp.get("team")
                               and proj_map.get(pid, 0) >= 3 and not has_played(pid)
                               and (pp.get("injury_status") or "").upper() not in ("OUT", "IR", "PUP", "SUS"))
         taxi_pool = [ext(pid, pp, "taxi") for pid in taxi_ids if (pp := players_db.get(pid)) and ok(pid, pp)]
@@ -990,7 +1024,7 @@ async def get_optimal_lineup(req: UserRequest):
                 continue
             cur = sl["optimal"]; cur_pts = (cur or {}).get("pts", 0)
             elig = SLOT_ELIGIBILITY.get(sl["slot"], [sl["slot"]])
-            cands = [f for f in fa_pool if f["position"] in elig and f["id"] not in used_fa and f["pts"] >= cur_pts + FA_MIN_GAIN]
+            cands = [f for f in fa_pool if eligible_for(f, sl["slot"]) and f["id"] not in used_fa and f["pts"] >= cur_pts + FA_MIN_GAIN]
             best = max(cands, key=lambda f: (f["pts"], f["source"] == "taxi")) if cands else None
             if best:
                 used_fa.add(best["id"])
@@ -1023,8 +1057,7 @@ async def get_position_needs(req: UserRequest):
     user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
     user_id = user["user_id"]
 
-    needs_by_pos = {pos: [] for pos in ["QB", "RB", "WR", "TE", "K", "DEF"]}
-    ALL_POS = ["QB", "RB", "WR", "TE", "K", "DEF"]
+    needs_by_pos = {pos: [] for pos in ALL_POS}
 
     for league in leagues:
         roster_positions = league.get("roster_positions", [])
@@ -1095,7 +1128,7 @@ async def get_position_needs(req: UserRequest):
 
             if pos == "QB":
                 min_needed = dedicated + flex_need + 2   # QB depth matters more (bye/injury in SF)
-            elif pos in ("RB", "WR", "TE"):
+            elif pos in ("RB", "WR", "TE", "DL", "LB", "DB"):
                 min_needed = dedicated + flex_need + 1
             else:
                 min_needed = dedicated
@@ -1603,7 +1636,7 @@ async def get_team_deep_dive(req: UserLeagueRequest):
     roster.sort(key=lambda x: (-(x["role"] == "starter"), x["position"], -x["proj"]))
 
     # ── position groups vs league ──
-    POS = ["QB", "RB", "WR", "TE", "K", "DEF"]
+    POS = list(ALL_POS)
     lg_pos_avg = {}
     for pos in POS:
         vals = []
@@ -1979,7 +2012,7 @@ async def get_starter_upgrades(req: UserRequest):
     user_id = user["user_id"]
     week = req.week or current_week
     MIN_GAIN = 1.5
-    RELEVANT = {"QB", "RB", "WR", "TE", "K", "DEF"}
+    RELEVANT = ALL_POS_SET
 
     proj_array, stats_array = await asyncio.gather(get_projections(season, week), get_stats(season, week))
     stats_map = build_stats_map(stats_array)
@@ -2021,7 +2054,7 @@ async def get_starter_upgrades(req: UserRequest):
         # Unplayed FAs with a meaningful projection
         fas = sorted(
             [e for pid, p in players_db.items()
-             if pid not in rostered and p.get("position") in RELEVANT
+             if pid not in rostered and p.get("position") in RELEVANT and p.get("position") in league_positions(league)
              and proj_map.get(pid, 0) >= 3 and not has_played(pid)
              if (e := enrich(pid, is_fa=True))],
             key=lambda x: -x["pts"]
@@ -2048,7 +2081,7 @@ async def get_starter_upgrades(req: UserRequest):
                     and (opt["pts"] - cur["pts"]) < MIN_GAIN:
                 roster_up = []
                 base_pts = cur["pts"]; floor = base_pts + MIN_GAIN
-            fa_ups = [f for f in fas if f["position"] in elig and f["pts"] > floor][:2]
+            fa_ups = [f for f in fas if eligible_for(f, x["slot"]) and f["pts"] > floor][:2]
             zero_proj = cur is not None and (cur.get("pts") or 0) <= 0
             if roster_up or fa_ups or (zero_proj and cur):
                 upgrades.append({
@@ -2103,7 +2136,7 @@ async def get_bench_vs_fa(req: UserRequest):
             for pid in (r.get("players") or []):
                 rostered_ids.add(str(pid))
 
-        RELEVANT_POSITIONS = {"QB", "RB", "WR", "TE", "K", "DEF"}
+        RELEVANT_POSITIONS = ALL_POS_SET
 
         my_bench = []
         for pid in (my_roster.get("players") or []):
@@ -2333,7 +2366,7 @@ async def get_waiver_watch(req: UserRequest):
     user_id = user["user_id"]
     week = req.week or current_week
     weeks_completed = max(0, min(week - 1, current_week - 1))
-    RELEVANT = {"QB", "RB", "WR", "TE", "K", "DEF"}
+    RELEVANT = ALL_POS_SET
     MIN_GAIN = 1.0
 
     proj_array, stats_array, weekly_by_player, trending_add, trending_drop = await asyncio.gather(
@@ -2386,8 +2419,8 @@ async def get_waiver_watch(req: UserRequest):
             pid = starters_ordered[i] if i < len(starters_ordered) else "0"
             slot_starters.append((slot, line(pid) if pid and pid != "0" and pid in players_db else None))
 
-        def weakest_for(pos):
-            opts = [(st["floor"] if st else -1.0, slot, st) for slot, st in slot_starters if pos in SLOT_ELIGIBILITY.get(slot, [slot])]
+        def weakest_for(fa_row):
+            opts = [(st["floor"] if st else -1.0, slot, st) for slot, st in slot_starters if eligible_for(fa_row, slot)]
             if not opts:
                 return None
             return min(opts, key=lambda t: t[0])
@@ -2405,7 +2438,7 @@ async def get_waiver_watch(req: UserRequest):
                 continue
             if (fa["injury_status"] or "").lower() in ("out", "ir", "pup", "sus"):
                 continue
-            w = weakest_for(fa["position"])
+            w = weakest_for(fa)
             if w is None:
                 continue
             weakest_val, slot, st = w
@@ -3111,7 +3144,7 @@ async def get_player_lookup(req: UserPlayerRequest):
         raise HTTPException(status_code=400, detail="Enter a player name.")
 
     # Match: exact full name first, then substring on full/last name; prefer active players on a team
-    POS = {"QB", "RB", "WR", "TE", "K", "DEF"}
+    POS = ALL_POS_SET
     def nm(p): return player_name(p).lower()
     exact = [(pid, p) for pid, p in players_db.items() if p.get("position") in POS and nm(p) == q]
     cands = exact or [(pid, p) for pid, p in players_db.items() if p.get("position") in POS and (q in nm(p) or q == (p.get("last_name") or "").lower())]
@@ -3193,6 +3226,8 @@ def _age_mult(pos, age, superflex):
         m = 1.1 if a <= 26 else 1.0 if a <= 32 else 0.85 if a <= 35 else 0.65
         if superflex:
             m *= 1.3
+    elif pos in ("DL", "LB", "DB"):
+        m = 1.05 if a <= 25 else 1.0 if a <= 28 else 0.85 if a <= 30 else 0.65
     else:
         m = 0.3   # K / DEF carry little dynasty value
     return m
@@ -3236,7 +3271,7 @@ async def get_trade_finder(req: UserPlayerRequest):
     q = " ".join((req.player_name or "").lower().split())
     if not q:
         raise HTTPException(status_code=400, detail="Enter a player name.")
-    POS = {"QB", "RB", "WR", "TE", "K", "DEF"}
+    POS = ALL_POS_SET
     nm = lambda p: player_name(p).lower()
     exact = [(pid, p) for pid, p in players_db.items() if p.get("position") in POS and nm(p) == q]
     cands = exact or [(pid, p) for pid, p in players_db.items() if p.get("position") in POS and (q in nm(p) or q == (p.get("last_name") or "").lower())]
@@ -3324,12 +3359,13 @@ async def get_trade_finder(req: UserPlayerRequest):
         def need_of(roster_players, pos, exclude=set()):
             have = sum(1 for x in roster_players if x["position"] == pos and x["id"] not in exclude and x["value"] >= startable_cut(pos))
             return pos_demand(pos) - have      # >0 short, <0 surplus
-        their_need = {pos: need_of(their_players, pos, exclude={tpid}) for pos in ("QB", "RB", "WR", "TE")}
+        tf_pos = [x for x in ("QB", "RB", "WR", "TE") + IDP_POS if x in league_positions(league)]
+        their_need = {pos: need_of(their_players, pos, exclude={tpid}) for pos in tf_pos}
         rebuild = their_ev["roster_tier"] in ("Rebuild", "Fringe")
         contender = their_ev["roster_tier"] in ("Juggernaut", "Contender")
 
         # My side: assets
-        my_players = [x for pid in (my.get("players") or []) if (x := pl(str(pid))) and x["position"] in ("QB", "RB", "WR", "TE")]
+        my_players = [x for pid in (my.get("players") or []) if (x := pl(str(pid))) and x["position"] in tf_pos]
         my_players.sort(key=lambda x: -x["value"])
         protected = {x["id"] for x in my_players[:PROTECT]}
         tgt_v_for_pool = (next((x for x in their_players if x["id"] == tpid), None) or pl(tpid))["value"]
@@ -3342,7 +3378,7 @@ async def get_trade_finder(req: UserPlayerRequest):
                     for pk in _owned_picks(my["roster_id"], rosters, traded, season, min(draft_rounds, 4))]
         my_picks.sort(key=lambda x: -x["value"])
         my_picks = my_picks[:6]
-        my_need_after = lambda sent_ids: {pos: need_of(my_players, pos, exclude=sent_ids) for pos in ("QB", "RB", "WR", "TE")}
+        my_need_after = lambda sent_ids: {pos: need_of(my_players, pos, exclude=sent_ids) for pos in tf_pos}
         my_need_before = my_need_after(set())
 
         premium = 1.05 + (0.10 if tpid in their_top3 else 0) - (0.03 if their_need.get(target["position"], 0) < 0 else 0)
@@ -3428,4 +3464,79 @@ async def get_trade_finder(req: UserPlayerRequest):
                 "Picks are priced off that league's player value distribution (1st ≈ 80th percentile player, discounted 15%/yr out). "
                 "Offers send 105–120%+ of his value (more if he's their top-3), favor positions they're short at, respect your top-3 protect list, "
                 "never leave you short at a position, and cap at 4-for-1.",
+    }
+
+
+# ── HAIL MARY (games still in doubt + what it takes) ──────────────────────────
+
+@router.post("/analysis/hail-mary")
+async def get_hail_mary(req: UserRequest):
+    """Only matchups that are genuinely still in doubt (10–90% win probability, players left to play).
+    For each: points you need from your remaining players, scaled per player by projection, and what
+    the opponent's remaining players must be held under."""
+    LOW, HIGH = 10.0, 90.0
+    base = await get_theres_a_chance(req)
+    results, ignored_win, ignored_loss = [], [], []
+
+    for r in base["results"]:
+        if r["my_left"] + r["opp_left"] == 0:
+            continue
+        if r["win_prob"] > HIGH:
+            ignored_win.append({"league": r["league"], "win_prob": r["win_prob"]}); continue
+        if r["win_prob"] < LOW:
+            ignored_loss.append({"league": r["league"], "win_prob": r["win_prob"]}); continue
+
+        my_need = round(max(r["opp_exp"] - r["my_live"], 0), 1)       # to pass their expected final
+        their_need = round(max(r["my_exp"] - r["opp_live"], 0), 1)    # what they need to pass yours
+        my_rem, opp_rem = r["my_remaining_proj"], r["opp_remaining_proj"]
+
+        def per_player(rows_pre, rows_live, total_needed, total_proj):
+            scale = (total_needed / total_proj) if total_proj > 0 else None
+            out = []
+            for p in rows_live + rows_pre:
+                proj = p.get("remaining_proj", p.get("proj_pts", 0)) or 0
+                out.append({**p, "rem_proj": round(proj, 1),
+                            "needs": round(proj * scale, 1) if scale is not None else None})
+            return sorted(out, key=lambda x: -x["rem_proj"])
+
+        mine = per_player(r["my_remaining"], r["my_in_progress"], my_need, my_rem)
+        theirs = per_player(r["opp_remaining"], r["opp_in_progress"], their_need, opp_rem)
+
+        if r["my_left"] == 0:
+            situation, headline = "SWEAT IT OUT", f"You're done at {r['my_live']}. Their {r['opp_left']} remaining must score under {round(r['my_live'] - r['opp_live'], 1)} (projected {opp_rem})."
+        elif r["opp_left"] == 0:
+            situation, headline = "YOUR MOVE", f"They're done at {r['opp_live']}. You need {round(max(r['opp_live'] - r['my_live'], 0) + 0.01, 1)} from {r['my_left']} player{'s' if r['my_left'] != 1 else ''} (projected {my_rem})."
+        elif r["my_live"] >= r["opp_live"] and r["win_prob"] >= 50:
+            situation, headline = "HOLD ON", f"Ahead {r['my_live']}–{r['opp_live']}. Their {r['opp_left']} need {their_need} (projected {opp_rem}) to pass your expected {r['my_exp']}."
+        elif my_need > my_rem * 1.15:
+            situation, headline = "HAIL MARY", f"Need {my_need} from {r['my_left']} player{'s' if r['my_left'] != 1 else ''} — {int(round(100 * my_need / my_rem)) if my_rem else '∞'}% of their projection."
+        else:
+            situation, headline = "IN REACH", f"Need {my_need} from {r['my_left']} player{'s' if r['my_left'] != 1 else ''}, projected {my_rem}."
+
+        pace = round(100 * my_need / my_rem) if my_rem > 0 and r["my_left"] > 0 else None
+        results.append({
+            "league": r["league"], "team": r["team"], "opp_name": r["opp_name"],
+            "win_prob": r["win_prob"], "situation": situation, "headline": headline,
+            "my_live": r["my_live"], "opp_live": r["opp_live"], "my_exp": r["my_exp"], "opp_exp": r["opp_exp"],
+            "my_left": r["my_left"], "opp_left": r["opp_left"],
+            "my_need": my_need, "my_remaining_proj": my_rem, "pace_pct": pace,
+            "their_need": their_need, "opp_remaining_proj": opp_rem,
+            "hold_under": round(r["my_live"] - r["opp_live"], 1) if r["my_left"] == 0 else None,
+            "my_players": mine, "their_players": theirs,
+        })
+
+    results.sort(key=lambda x: abs(x["win_prob"] - 50))
+    return {
+        "week": base["week"], "have_schedule": base["have_schedule"],
+        "summary": {
+            "in_doubt": len(results),
+            "favored": sum(1 for x in results if x["win_prob"] >= 50),
+            "underdog": sum(1 for x in results if x["win_prob"] < 50),
+            "ignored_locked": len(ignored_win), "ignored_lost": len(ignored_loss) + len(base.get("skipped", [])),
+            "finished": len(base.get("finished", [])),
+            "swing_wins": round(sum(x["win_prob"] for x in results) / 100, 1),
+        },
+        "results": results,
+        "note": f"Shows only matchups between {int(LOW)}% and {int(HIGH)}% win probability with players still to play. "
+                "'Needs' scales each remaining player's projection to the total required — the share he has to deliver.",
     }

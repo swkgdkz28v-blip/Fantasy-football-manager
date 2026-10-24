@@ -33,7 +33,28 @@ async def get_players() -> dict:
     if cached is not None:
         return cached
     data = await _get(f"{BASE_URL}/players/nfl")
+    _normalize_positions(data)
     return set_cached(players_cache, "players", data)
+
+# Sleeper mixes NFL positions (DE, CB, OLB…) with fantasy positions (DL, DB, LB). Lineup slots use the
+# fantasy ones, so normalise once: `position` = primary fantasy position, `fantasy_positions` = every
+# position the player is eligible for (e.g. an edge rusher listed DL + LB). Original kept in nfl_position.
+IDP_POS_MAP = {"DE": "DL", "DT": "DL", "NT": "DL", "EDGE": "DL",
+               "CB": "DB", "S": "DB", "SS": "DB", "FS": "DB",
+               "OLB": "LB", "ILB": "LB", "MLB": "LB"}
+
+def _normalize_positions(players: dict):
+    for p in players.values():
+        if not isinstance(p, dict):
+            continue
+        raw = p.get("position")
+        pos = IDP_POS_MAP.get(raw, raw)
+        fps = [IDP_POS_MAP.get(x, x) for x in (p.get("fantasy_positions") or []) if x]
+        if pos and pos not in fps:
+            fps.insert(0, pos)
+        p["nfl_position"] = raw
+        p["position"] = pos
+        p["fantasy_positions"] = list(dict.fromkeys(fps))
 
 # ── LEAGUES ───────────────────────────────────────────────────────────────────
 
@@ -130,6 +151,7 @@ async def get_projections(season: str, week: int) -> list:
         data = await _get(
             f"{PROJ_URL}/{season}/{week}?season_type=regular"
             "&position[]=QB&position[]=RB&position[]=WR&position[]=TE&position[]=K&position[]=DEF"
+            "&position[]=DL&position[]=LB&position[]=DB"
         )
         return set_cached(projections_cache, key, data or [])
     except Exception:

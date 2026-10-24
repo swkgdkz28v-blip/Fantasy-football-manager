@@ -179,6 +179,9 @@ body {
 .pos-TE { background: #3a2a0a; color: #ffb347; }
 .pos-K  { background: #3a0a0a; color: #ff5c5c; }
 .pos-DEF{ background: #1a1a3a; color: #8b91a8; }
+.pos-DL{ background: #3a1a1a; color: #ff8c8c; }
+.pos-LB{ background: #2a1f3a; color: #c49bff; }
+.pos-DB{ background: #1a2f3a; color: #7fd4ff; }
 /* ── STAT TILES ── */
 .stat-row { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
 .stat-tile {
@@ -340,7 +343,7 @@ const API = {
 };
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
-const POS_CLASS = pos => ({ QB:'pos-QB', RB:'pos-RB', WR:'pos-WR', TE:'pos-TE', K:'pos-K', DEF:'pos-DEF' }[pos] || '');
+const POS_CLASS = pos => ({ QB:'pos-QB', RB:'pos-RB', WR:'pos-WR', TE:'pos-TE', K:'pos-K', DEF:'pos-DEF', DL:'pos-DL', LB:'pos-LB', DB:'pos-DB' }[pos] || '');
 const POS_COLORS = { QB:'var(--accent4)', RB:'var(--accent)', WR:'var(--purple)', TE:'var(--accent3)', K:'var(--accent2)', DEF:'var(--text3)' };
 
 function PosBadge({ pos }) {
@@ -1752,6 +1755,61 @@ function TradeFinderView({ data }) {
   );
 }
 
+// ── HAIL MARY VIEW ────────────────────────────────────────────────────────────
+function HailMaryView({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  const SIT = { 'HAIL MARY': 'var(--accent2)', 'IN REACH': 'var(--accent3)', 'HOLD ON': 'var(--accent)', 'SWEAT IT OUT': 'var(--accent4)', 'YOUR MOVE': 'var(--accent3)' };
+  const prow = (p, color, needLabel) => e('div', { key: p.id, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border)' } },
+    e(PosBadge, { pos: p.position }),
+    e('div', { style: { flex: 1, minWidth: 0 } },
+      e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name),
+      e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, p.state === 'live' ? `${p.team} · 🔴 ${p.actual} so far · ${p.progress}% done` : `${p.team} · yet to play`)),
+    e('div', { style: { textAlign: 'right', minWidth: 64 } },
+      e('div', { style: { fontSize: 15, fontWeight: 800, color } }, p.needs != null ? p.needs : '—'),
+      e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${needLabel} · proj ${p.rem_proj}`)));
+  return e('div', null,
+    e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 8 } }, `WEEK ${data.week} · HAIL MARY`),
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.in_doubt ?? 0, label: 'Still In Doubt', color: 'var(--accent3)' }),
+      e(StatTile, { value: `${sm.favored ?? 0}/${sm.underdog ?? 0}`, label: 'Favored / Dog', color: 'var(--text2)' }),
+      e(StatTile, { value: sm.swing_wins ?? 0, label: 'Exp. Wins Here', color: 'var(--accent4)' }),
+      e(StatTile, { value: `${sm.ignored_locked ?? 0} / ${sm.ignored_lost ?? 0}`, label: 'Ignored: Safe / Gone', color: 'var(--text3)' })
+    ),
+    data.have_schedule === false && e(Alert, { type: 'warning' }, e('p', null, 'Live game status unavailable — in-progress players estimated at 50%.')),
+    !data.results?.length && e(Alert, { type: 'success', title: 'Nothing in doubt' }, e('p', null, 'Every matchup is either safely won, out of reach, or finished.')),
+    (data.results || []).map(r => {
+      const c = SIT[r.situation] || 'var(--text2)';
+      return e(Card, { key: r.league, borderColor: c },
+        e('div', { className: 'card-header' },
+          e('div', null, e('div', { className: 'card-title' }, r.league), e('div', { className: 'card-subtitle' }, `${r.team} vs ${r.opp_name}`)),
+          e('div', { style: { textAlign: 'right' } },
+            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', color: c, lineHeight: 1 } }, `${r.win_prob}%`),
+            e('div', { style: { fontSize: 11, fontWeight: 800, color: c } }, r.situation))),
+        e('div', { style: { fontSize: 13, color: 'var(--text)', marginBottom: 10, lineHeight: 1.4 } }, r.headline),
+        e('div', { className: 'grid-2', style: { marginBottom: 10 } },
+          e('div', { style: { padding: '8px 10px', background: 'var(--surface2)', borderRadius: 8, textAlign: 'center' } },
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `YOU · ${r.my_left} left`),
+            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', color: 'var(--accent)' } }, r.my_live.toFixed(1)),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `exp ${r.my_exp}`)),
+          e('div', { style: { padding: '8px 10px', background: 'var(--surface2)', borderRadius: 8, textAlign: 'center' } },
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `THEM · ${r.opp_left} left`),
+            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', color: 'var(--accent2)' } }, r.opp_live.toFixed(1)),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `exp ${r.opp_exp}`))),
+        r.my_players.length > 0 && e('div', { style: { marginBottom: 10 } },
+          e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 4 } },
+            `Your remaining · need ${r.my_need}${r.pace_pct != null ? ` (${r.pace_pct}% of proj)` : ''}`),
+          r.my_players.map(p => prow(p, r.pace_pct > 115 ? 'var(--accent2)' : 'var(--accent)', 'needs'))),
+        r.their_players.length > 0 && e('div', null,
+          e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent2)', marginBottom: 4 } },
+            r.hold_under != null ? `Their remaining · must stay under ${r.hold_under}` : `Their remaining · need ${r.their_need} to pass you`),
+          r.their_players.map(p => prow(p, 'var(--accent2)', r.hold_under != null ? 'their share' : 'their need')))
+      );
+    }),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
+  );
+}
+
 // ── SEASON FORECAST VIEW ──────────────────────────────────────────────────────
 function SeasonForecastView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
@@ -1882,6 +1940,7 @@ const SECTIONS = [
       { id: 'week-review', label: '📝 Week Review', endpoint: '/analysis/week-review', needsWeek: true },
       { id: 'week-record', label: '🎯 Week Record', endpoint: '/analysis/week-record', needsWeek: true },
       { id: 'theres-a-chance', label: '🎲 There\'s A Chance', endpoint: '/analysis/theres-a-chance' },
+      { id: 'hail-mary', label: '🙏 Hail Mary', endpoint: '/analysis/hail-mary' },
       { id: 'rooting-guide', label: '📣 Rooting Guide', endpoint: '/analysis/rooting-guide' },
       { id: 'season-records', label: '📒 Season Records', endpoint: '/analysis/season-records' },
       { id: 'player-lookup', label: '🔎 Player Lookup', endpoint: '/analysis/player-lookup', needsPlayer: true },
@@ -2072,6 +2131,8 @@ function App() {
         return e(PlayerLookupView, { data });
       case 'trade-finder':
         return e(TradeFinderView, { data });
+      case 'hail-mary':
+        return e(HailMaryView, { data });
       default:
         return e(GenericView, { data, title: feature.label });
     }
@@ -2084,7 +2145,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.24')
+        e('span', { className: 'app-version' }, 'v10.26')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

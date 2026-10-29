@@ -3526,6 +3526,7 @@ async def get_hail_mary(req: UserRequest):
         })
 
     results.sort(key=lambda x: abs(x["win_prob"] - 50))
+
     return {
         "week": base["week"], "have_schedule": base["have_schedule"],
         "summary": {
@@ -3539,4 +3540,80 @@ async def get_hail_mary(req: UserRequest):
         "results": results,
         "note": f"Shows only matchups between {int(LOW)}% and {int(HIGH)}% win probability with players still to play. "
                 "'Needs' scales each remaining player's projection to the total required — the share he has to deliver.",
+    }
+
+
+# ── K / DEF LEAGUES ───────────────────────────────────────────────────────────
+
+@router.post("/analysis/k-def-leagues")
+async def get_k_def_leagues(req: UserRequest):
+    """Every league whose starting lineup has a K or team DEF slot, with who is in each slot this week
+    and a flag when that slot is empty, on bye, injured or projected for 0."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+
+    proj_array, byes = await asyncio.gather(get_projections(season, week), bye_teams_for(season, week))
+    targets = []
+    for lg in leagues:
+        slots = [x for x in (lg.get("roster_positions") or []) if x not in ("BN", "IR", "TAXI")]
+        if "K" in slots or "DEF" in slots:
+            targets.append((lg, slots))
+    neither = [lg["name"] for lg in leagues if all(lg is not t[0] for t in targets)]
+
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"]),
+                                                    get_matchups(lg["league_id"], week)) for lg, _ in targets])
+    results = []
+    for (lg, slots), (rosters, league_users, matchups) in zip(targets, fetched):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        mu = next((u for u in league_users if u["user_id"] == user_id), None)
+        team = (mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
+        proj_map = build_proj_map(proj_array, lg.get("scoring_settings") or {})
+        my_m = next((m for m in matchups if m["roster_id"] == my["roster_id"]), None)
+        starters = [str(x) for x in ((my_m or my).get("starters") or [])]
+        roster_ids = {str(x) for x in (my.get("players") or [])}
+
+        rows = []
+        for i, sl in enumerate(slots):
+            if sl not in ("K", "DEF"):
+                continue
+            pid = starters[i] if i < len(starters) else "0"
+            p = players_db.get(pid) if pid and pid != "0" else None
+            issue = None
+            if not p:
+                issue = "EMPTY"
+            elif is_on_bye(p, byes, week):
+                issue = "BYE"
+            elif (p.get("injury_status") or "").upper() in ("OUT", "IR", "SUS"):
+                issue = (p.get("injury_status") or "").upper()
+            elif proj_map.get(pid, 0) <= 0:
+                issue = "0 PROJ"
+            # best rostered backup at that position not already starting
+            backups = sorted([b for b in roster_ids if b not in starters and (players_db.get(b) or {}).get("position") == sl],
+                             key=lambda b: -proj_map.get(b, 0))
+            bk = backups[0] if backups else None
+            rows.append({
+                "slot": sl, "id": pid if p else None, "name": player_name(p) if p else None,
+                "team": (p or {}).get("team"), "proj": round(proj_map.get(pid, 0), 1) if p else 0, "issue": issue,
+                "backup": {"name": player_name(players_db[bk]), "team": players_db[bk].get("team"),
+                           "proj": round(proj_map.get(bk, 0), 1)} if bk else None,
+                "rostered_at_pos": sum(1 for b in roster_ids if (players_db.get(b) or {}).get("position") == sl),
+            })
+        results.append({
+            "league": lg["name"], "team": team,
+            "k_slots": slots.count("K"), "def_slots": slots.count("DEF"),
+            "slots": rows, "issues": sum(1 for r in rows if r["issue"]),
+        })
+
+    return {
+        "week": week,
+        "summary": {
+            "leagues": len(leagues), "with_k_or_def": len(results),
+            "with_k": sum(1 for r in results if r["k_slots"]), "with_def": sum(1 for r in results if r["def_slots"]),
+            "with_both": sum(1 for r in results if r["k_slots"] and r["def_slots"]),
+            "neither": len(neither), "issues": sum(r["issues"] for r in results),
+        },
+        "results": results, "neither": neither,
     }

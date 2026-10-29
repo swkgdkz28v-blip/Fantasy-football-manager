@@ -1810,6 +1810,47 @@ function HailMaryView({ data }) {
   );
 }
 
+// ── K / DEF LEAGUES VIEW ──────────────────────────────────────────────────────
+function KDefLeaguesView({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  const [filter, setFilter] = useState('all');
+  const rows = (data.results || []).filter(r => filter === 'all' || (filter === 'K' ? r.k_slots : filter === 'DEF' ? r.def_slots : r.issues));
+  const flagged = rows.filter(r => r.issues > 0), clean = rows.filter(r => !r.issues);
+  const btn = (id, label) => e('button', { key: id, onClick: () => setFilter(id), style: { flex: 1, padding: '8px 4px', fontSize: 12, fontWeight: 700, borderRadius: 8, border: `1px solid ${filter === id ? 'var(--accent)' : 'var(--border)'}`, background: filter === id ? 'var(--surface2)' : 'transparent', color: filter === id ? 'var(--text)' : 'var(--text3)' } }, label);
+  const slotRow = (x, i) => e('div', { key: i, style: { padding: '8px 0', borderBottom: '1px solid var(--border)' } },
+    e('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+      e(PosBadge, { pos: x.slot }),
+      e('span', { style: { fontSize: 14, fontWeight: 700, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, x.name || 'Empty slot'),
+      x.issue && e(Tag, { color: 'red' }, x.issue),
+      x.name && e('span', { style: { fontSize: 14, fontWeight: 700, color: x.proj > 0 ? 'var(--text)' : 'var(--accent2)' } }, x.proj)),
+    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginTop: 2 } },
+      `${x.team || ''}${x.team ? ' · ' : ''}${x.rostered_at_pos} ${x.slot} rostered`,
+      x.backup ? ` · backup ${x.backup.name} (${x.backup.proj})` : x.issue ? ' · no backup — check waivers' : ''));
+  const card = r => e(Card, { key: r.league, borderColor: r.issues ? 'var(--accent2)' : 'var(--accent)' },
+    e('div', { className: 'card-header' },
+      e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+      e('div', { style: { fontSize: 11, color: 'var(--text3)', textAlign: 'right' } }, [r.k_slots ? `${r.k_slots} K` : null, r.def_slots ? `${r.def_slots} DEF` : null].filter(Boolean).join(' · '))),
+    r.slots.map(slotRow));
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.with_k_or_def ?? 0, label: `K/DEF Leagues (of ${sm.leagues})`, color: 'var(--text)' }),
+      e(StatTile, { value: sm.with_k ?? 0, label: 'Start a K', color: 'var(--accent4)' }),
+      e(StatTile, { value: sm.with_def ?? 0, label: 'Start a DEF', color: 'var(--accent4)' }),
+      e(StatTile, { value: sm.issues ?? 0, label: 'Slots Flagged', color: 'var(--accent2)' })),
+    e('div', { style: { display: 'flex', gap: 6, marginBottom: 12 } }, btn('all', 'All'), btn('K', 'K'), btn('DEF', 'DEF'), btn('issues', '⚠️ Flagged')),
+    flagged.map(card),
+    clean.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 6 } }, `✅ Set (${clean.length})`),
+      clean.map(r => e('div', { key: r.league, style: { padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 12 } },
+        e('div', { style: { fontWeight: 700 } }, r.league, e('span', { style: { color: 'var(--text3)', fontWeight: 400, fontSize: 10 } }, r.team ? ` · ${r.team}` : '')),
+        e('div', { style: { color: 'var(--text2)', fontSize: 11 } }, r.slots.map(x => `${x.slot}: ${x.name} (${x.proj})`).join(' · '))))),
+    !rows.length && e(Alert, { type: 'info' }, e('p', null, 'No leagues match this filter.')),
+    data.neither?.length > 0 && e('details', { style: { marginTop: 8 } },
+      e('summary', { style: { fontSize: 11, color: 'var(--text3)', cursor: 'pointer' } }, `${data.neither.length} league${data.neither.length === 1 ? '' : 's'} with no K or DEF slot`),
+      e('div', { style: { fontSize: 11, color: 'var(--text2)', lineHeight: 1.6, marginTop: 4 } }, data.neither.join(' · '))));
+}
+
 // ── SEASON FORECAST VIEW ──────────────────────────────────────────────────────
 function SeasonForecastView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
@@ -1955,6 +1996,7 @@ const SECTIONS = [
       { id: 'open', label: '⚡ Open Spots', endpoint: '/alerts/open-starter-spots' },
       { id: 'zero-proj', label: '0️⃣ Zero-Point Starters', endpoint: '/alerts/zero-projection-starters' },
       { id: 'ir-eligible', label: '🏥 Move To IR', endpoint: '/alerts/ir-eligible' },
+      { id: 'k-def', label: '🦵 K / DEF Leagues', endpoint: '/analysis/k-def-leagues' },
     ]
   },
   {
@@ -2121,6 +2163,8 @@ function App() {
         return e(WeeklyDigestView, { data });
       case 'rooting-guide':
         return e(RootingGuideView, { data });
+      case 'k-def':
+        return e(KDefLeaguesView, { data });
       case 'season-records':
         return e(SeasonRecordsView, { data });
       case 'ir-eligible':
@@ -2145,7 +2189,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.26')
+        e('span', { className: 'app-version' }, 'v10.29')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

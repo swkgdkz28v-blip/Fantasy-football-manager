@@ -2990,6 +2990,17 @@ async def get_season_records(req: UserRequest):
 
 # ── IR-ELIGIBLE PLAYERS NOT ON IR ─────────────────────────────────────────────
 
+def _ir_allowed(settings: dict) -> set:
+    """Injury statuses a league lets you keep in its IR slot (Sleeper default: IR and PUP only)."""
+    allowed = {"IR", "PUP"}
+    if settings.get("reserve_allow_out"):      allowed.add("OUT")
+    if settings.get("reserve_allow_doubtful"): allowed.add("DOUBTFUL")
+    if settings.get("reserve_allow_sus"):      allowed.add("SUS")
+    if settings.get("reserve_allow_na"):       allowed.add("NA")
+    if settings.get("reserve_allow_cov"):      allowed.add("COV")
+    return allowed
+
+
 @router.post("/alerts/ir-eligible")
 async def get_ir_eligible(req: UserRequest):
     """Rostered players (starters or bench; taxi ignored) whose injury status qualifies for the league's
@@ -3008,13 +3019,7 @@ async def get_ir_eligible(req: UserRequest):
             continue
         settings = league.get("settings") or {}
         ir_slots = max(int(settings.get("reserve_slots") or 0), sum(1 for x in (league.get("roster_positions") or []) if x == "IR"))
-        # Statuses this league lets you stash on IR (Sleeper defaults: IR and PUP only)
-        allowed = {"IR", "PUP"}
-        if settings.get("reserve_allow_out"):      allowed.add("OUT")
-        if settings.get("reserve_allow_doubtful"): allowed.add("DOUBTFUL")
-        if settings.get("reserve_allow_sus"):      allowed.add("SUS")
-        if settings.get("reserve_allow_na"):       allowed.add("NA")
-        if settings.get("reserve_allow_cov"):      allowed.add("COV")
+        allowed = _ir_allowed(settings)
 
         reserve = {str(x) for x in (my.get("reserve") or [])}
         starters = {str(x) for x in (my.get("starters") or [])}
@@ -3616,4 +3621,97 @@ async def get_k_def_leagues(req: UserRequest):
             "neither": len(neither), "issues": sum(r["issues"] for r in results),
         },
         "results": results, "neither": neither,
+    }
+
+
+# ── ILLEGAL IR (on IR but no longer eligible) ─────────────────────────────────
+
+@router.post("/alerts/ir-ineligible")
+async def get_ir_ineligible(req: UserRequest):
+    """Players sitting in a league's IR slot whose current status no longer qualifies under that league's
+    IR rules (e.g. activated, now Questionable, or OUT in a league that only allows IR/PUP). Sleeper blocks
+    adds, drops and trades until they are moved out, so each league gets a fix: activate if there's a free
+    roster spot, otherwise who to drop, plus any IR-eligible player who could take the slot."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+
+    proj_array = await get_projections(season, week)
+    all_rosters, all_users = await asyncio.gather(
+        asyncio.gather(*[get_rosters(lg["league_id"]) for lg in leagues]),
+        asyncio.gather(*[get_league_users(lg["league_id"]) for lg in leagues]),
+    )
+    results, checked, with_ir = [], 0, 0
+    for league, rosters, league_users in zip(leagues, all_rosters, all_users):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        checked += 1
+        reserve = [str(x) for x in (my.get("reserve") or [])]
+        if not reserve:
+            continue
+        with_ir += 1
+        settings = league.get("settings") or {}
+        allowed = _ir_allowed(settings)
+        proj_map = build_proj_map(proj_array, league.get("scoring_settings") or {})
+
+        bad = []
+        for pid in reserve:
+            p = players_db.get(pid) or {}
+            st = (p.get("injury_status") or "").upper()
+            if st in allowed:
+                continue
+            if not st:
+                why = "Healthy — no injury designation"
+            elif st in ("OUT", "DOUBTFUL", "SUS", "NA", "COV"):
+                why = f"{st.title() if st not in ('NA', 'COV', 'SUS') else st} — this league's IR only allows {', '.join(sorted(allowed))}"
+            else:
+                why = f"{st.title()} — not IR-eligible"
+            bad.append({"id": pid, "name": player_name(p) or pid, "position": p.get("position"), "team": p.get("team") or "FA",
+                        "status": st or "HEALTHY", "why": why, "proj": round(proj_map.get(pid, 0), 1)})
+        if not bad:
+            continue
+
+        # Roster room: active roster = everything except IR and taxi; max = every non-IR/TAXI lineup+bench slot
+        positions = league.get("roster_positions") or []
+        max_active = sum(1 for x in positions if x not in ("IR", "TAXI"))
+        taxi = {str(x) for x in (my.get("taxi") or [])}
+        active = [str(x) for x in (my.get("players") or []) if str(x) not in set(reserve) and str(x) not in taxi]
+        open_spots = max_active - len(active)
+        starters = {str(x) for x in (my.get("starters") or [])}
+        # weakest active non-starters as drop candidates
+        drop_pool = sorted([pid for pid in active if pid not in starters and players_db.get(pid)],
+                           key=lambda pid: proj_map.get(pid, 0))
+        drops = [{"name": player_name(players_db[pid]), "position": players_db[pid].get("position"),
+                  "proj": round(proj_map.get(pid, 0), 1)} for pid in drop_pool[:max(len(bad) - max(open_spots, 0), 0)]]
+        # IR-eligible players on the active roster who could take the freed slot
+        swap_in = [{"name": player_name(players_db[pid]), "position": players_db[pid].get("position"),
+                    "status": (players_db[pid].get("injury_status") or "").upper()}
+                   for pid in active if (players_db.get(pid) or {}).get("injury_status", "") and
+                   (players_db[pid].get("injury_status") or "").upper() in allowed]
+
+        n = len(bad)
+        if open_spots >= n:
+            fix = f"Activate {'him' if n == 1 else 'them'} — {open_spots} open roster spot{'s' if open_spots != 1 else ''}."
+        elif open_spots > 0:
+            fix = f"Activate {open_spots}, then drop {n - open_spots} to make room."
+        else:
+            fix = f"Roster is full — drop {n} to activate {'him' if n == 1 else 'them'}, or drop {'him' if n == 1 else 'them'}."
+        mu = next((u for u in league_users if u["user_id"] == user_id), None)
+        results.append({
+            "league": league["name"],
+            "team": (mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", ""),
+            "ineligible": bad, "allowed_statuses": sorted(allowed),
+            "ir_used": len(reserve), "open_spots": max(open_spots, 0), "fix": fix,
+            "drop_candidates": drops, "swap_in": swap_in,
+        })
+
+    return {
+        "week": week,
+        "summary": {"leagues_checked": checked, "leagues_with_ir": with_ir, "leagues_flagged": len(results),
+                    "players": sum(len(r["ineligible"]) for r in results),
+                    "need_drop": sum(1 for r in results if r["drop_candidates"])},
+        "results": results,
+        "note": "Sleeper locks adds, drops and trades in a league while an ineligible player sits in IR. "
+                "Eligibility uses each league's own IR settings.",
     }

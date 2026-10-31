@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional
 import asyncio
 import math
+import zlib
 from services.sleeper_client import *
 
 router = APIRouter(prefix="/api", tags=["analysis"])
@@ -2621,7 +2622,7 @@ async def get_playoff_odds(req: UserRequest):
         base_wins = {r["roster_id"]: st_of(r).get("wins", 0) + 0.5 * st_of(r).get("ties", 0) for r in rosters}
         base_pf = {r["roster_id"]: st_of(r).get("fpts", 0) + st_of(r).get("fpts_decimal", 0) / 100.0 for r in rosters}
 
-        seed = int(league["league_id"]) % 100000
+        seed = zlib.crc32(str(league["league_id"]).encode()) % 100000   # stable per league, any id format
         sim = _simulate_league(team_ids, strength, schedule, base_wins, base_pf, playoff_spots, SIMS, seed)
         me = sim[my_roster["roster_id"]]
 
@@ -4076,3 +4077,25 @@ async def get_league_sheet(req: UserRequest):
         "note": "Needs = positions with fewer active players (not IR/taxi) than starters + flex share + depth. "
                 "Red = can't even fill your starters there.",
     }
+
+
+# ── APP SHELL HELPERS (used by the UI on startup) ─────────────────────────────
+
+@router.get("/state")
+async def get_state():
+    """Current NFL season and week, so the UI can default its week picker."""
+    st = await get_nfl_state()
+    return {"season": st.get("season"), "week": st.get("week") or 1, "season_type": st.get("season_type")}
+
+
+@router.post("/me")
+async def get_me(req: UserRequest):
+    """Validates a username and returns display name, avatar and league count for the header."""
+    try:
+        user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Sleeper user '{req.username}' not found.")
+    if not user or not user.get("user_id"):
+        raise HTTPException(status_code=404, detail=f"Sleeper user '{req.username}' not found.")
+    return {"username": req.username, "display_name": user.get("display_name") or req.username,
+            "avatar": user.get("avatar"), "leagues": len(leagues), "season": season, "week": current_week}

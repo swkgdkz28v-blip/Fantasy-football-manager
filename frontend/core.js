@@ -1,11 +1,11 @@
-/* Fantasy Manager — core.js (v10.33)
+/* Fantasy Manager — core.js
    Loaded first. Holds: React shortcuts, API, shared result components, the feature registry,
    and the app shell (tabs, lists, feature screens, settings). Tab files (tabs/*.js) register their
    features with FF.tab(...) and are loaded after this file. */
 
 const { useState, useEffect, useCallback, useRef } = React;
 const e = React.createElement;
-const APP_VERSION = 'v10.33';
+const APP_VERSION = 'v' + ((document.querySelector('meta[name=app-version]') || {}).content || '?');   // set in index.html
 
 // ── STORAGE (never throws — private mode / blocked storage just means no memory) ─
 const store = {

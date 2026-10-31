@@ -3948,8 +3948,11 @@ async def get_age_profile(req: UserRequest):
         share_aging = sum(x["pts"] for x in past_cliff + next_year) / max(sum(x["pts"] for x in core), 1e-9)
         window = ("Closing" if share_aging >= 0.40 else "Win now" if (core_age or 0) >= 27.5
                   else "Rising" if (core_age or 99) <= 25.0 else "Open")
+        st = my.get("settings") or {}
+        w, l, t = st.get("wins", 0), st.get("losses", 0), st.get("ties", 0)
         results.append({
             "league": lg["name"], "team": _team_name(my, league_users, user.get("display_name", "")),
+            "record": f"{w}-{l}" + (f"-{t}" if t else ""), "win_pct": round((w + 0.5 * t) / (w + l + t), 3) if (w + l + t) else None,
             "core_age": core_age, "roster_age": avg([x["age"] for x in pool]),
             "pos_age": {k: avg(v) for k, v in by_pos.items()},
             "past_cliff": [{k: x[k] for k in ("name", "position", "age")} for x in sorted(past_cliff, key=lambda x: -x["age"])],

@@ -3715,3 +3715,364 @@ async def get_ir_ineligible(req: UserRequest):
         "note": "Sleeper locks adds, drops and trades in a league while an ineligible player sits in IR. "
                 "Eligibility uses each league's own IR settings.",
     }
+
+
+# ── SHARED: my team name ──────────────────────────────────────────────────────
+
+def _team_name(roster, league_users, fallback=""):
+    u = next((x for x in league_users if x.get("user_id") == (roster or {}).get("owner_id")), None)
+    return (u or {}).get("metadata", {}).get("team_name") or (u or {}).get("display_name") or fallback
+
+
+# ── EXPOSURE REPORT ───────────────────────────────────────────────────────────
+
+@router.post("/analysis/exposure")
+async def get_exposure(req: UserRequest):
+    """How concentrated your portfolio is: most-owned players, how many of your lineups each one starts in,
+    what share of your projected starting points rides on him, and NFL-team concentration among starters."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+    proj_array, byes = await asyncio.gather(get_projections(season, week), bye_teams_for(season, week))
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_matchups(lg["league_id"], week)) for lg in leagues])
+
+    agg, team_starts, n_leagues, total_start_slots, total_proj = {}, {}, 0, 0, 0.0
+    for lg, (rosters, matchups) in zip(leagues, fetched):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        n_leagues += 1
+        proj_map = build_proj_map(proj_array, lg.get("scoring_settings") or {})
+        my_m = next((m for m in matchups if m["roster_id"] == my["roster_id"]), None)
+        starters = [str(x) for x in ((my_m or my).get("starters") or []) if x and str(x) != "0"]
+        lg_total = sum(proj_map.get(pid, 0) for pid in starters) or 1.0
+        total_start_slots += len(starters); total_proj += lg_total
+        for pid in (str(x) for x in (my.get("players") or [])):
+            p = players_db.get(pid)
+            if not p:
+                continue
+            a = agg.setdefault(pid, {"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team") or "FA",
+                                     "age": p.get("age"), "injury_status": p.get("injury_status"),
+                                     "owned": 0, "starting": 0, "proj_share_sum": 0.0, "proj_pts": 0.0, "leagues": []})
+            a["owned"] += 1
+            on = pid in starters
+            if on:
+                a["starting"] += 1
+                a["proj_share_sum"] += proj_map.get(pid, 0) / lg_total
+                a["proj_pts"] += proj_map.get(pid, 0)
+                t = p.get("team") or "FA"
+                team_starts[t] = team_starts.get(t, 0) + 1
+            a["leagues"].append({"league": lg["name"], "starting": on})
+
+    players = []
+    for a in agg.values():
+        a["own_pct"] = round(100 * a["owned"] / max(n_leagues, 1), 1)
+        a["start_pct"] = round(100 * a["starting"] / max(n_leagues, 1), 1)
+        a["portfolio_share"] = round(100 * a["proj_pts"] / max(total_proj, 1e-9), 2)   # % of ALL your projected starting pts
+        a["avg_lineup_share"] = round(100 * a["proj_share_sum"] / max(a["starting"], 1), 1)  # % of a lineup when he starts
+        a["on_bye"] = (a["team"] in byes)
+        a.pop("proj_share_sum"); a["proj_pts"] = round(a["proj_pts"], 1)
+        players.append(a)
+    players.sort(key=lambda x: (-x["owned"], -x["starting"], x["name"]))
+    by_risk = sorted(players, key=lambda x: -x["portfolio_share"])
+    teams = sorted([{"team": t, "starts": n, "pct": round(100 * n / max(total_start_slots, 1), 1), "on_bye": t in byes}
+                    for t, n in team_starts.items() if t != "FA"], key=lambda x: -x["starts"])
+    pos_mix = {}
+    for a in players:
+        if a["starting"]:
+            pos_mix[a["position"]] = pos_mix.get(a["position"], 0) + a["starting"]
+    return {
+        "week": week,
+        "summary": {"leagues": n_leagues, "unique_players": len(players), "start_slots": total_start_slots,
+                    "top5_share": round(sum(x["portfolio_share"] for x in by_risk[:5]), 1),
+                    "top_team": teams[0] if teams else None,
+                    "injured_exposure": round(sum(x["portfolio_share"] for x in players if (x["injury_status"] or "").upper() in ("OUT", "IR", "DOUBTFUL", "QUESTIONABLE")), 1)},
+        "most_owned": players[:40], "biggest_risk": by_risk[:15], "teams": teams[:12], "position_mix": pos_mix,
+        "note": "Portfolio share = this player's projected points ÷ your projected starting points across every league this week.",
+    }
+
+
+# ── BYE WEEK PLANNER ──────────────────────────────────────────────────────────
+
+@router.post("/analysis/bye-planner")
+async def get_bye_planner(req: UserRequest):
+    """Looks ahead through the rest of the regular season and flags weeks where byes (plus long-term injuries)
+    leave a league unable to fill its starting lineup."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    start = max(req.week or current_week, 1)
+    last = 17
+    weeks = list(range(start, last + 1))
+    bye_list = await asyncio.gather(*[bye_teams_for(season, w) for w in weeks])
+    byes_by_week = dict(zip(weeks, bye_list))
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"])) for lg in leagues])
+
+    LONG_OUT = ("IR", "PUP", "SUS", "NA")
+    results, alerts_by_week = [], {}
+    for lg, (rosters, league_users) in zip(leagues, fetched):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        slots = [x for x in (lg.get("roster_positions") or []) if x not in ("BN", "IR", "TAXI")]
+        reg_end = int((lg.get("settings") or {}).get("playoff_week_start") or 15) - 1
+        exclude = {str(x) for x in (my.get("reserve") or [])} | {str(x) for x in (my.get("taxi") or [])}
+        base_pool = []
+        for pid in (str(x) for x in (my.get("players") or [])):
+            p = players_db.get(pid)
+            if not p or pid in exclude or not p.get("team"):
+                continue
+            st = (p.get("injury_status") or "").upper()
+            if st in LONG_OUT:
+                continue
+            base_pool.append({"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team"),
+                              "out_now": st == "OUT", "is_starter": pid in {str(x) for x in (my.get("starters") or [])}})
+        starters_now = [x for x in base_pool if x["is_starter"]]
+        bad_weeks = []
+        for w in weeks:
+            byes = byes_by_week.get(w) or set()
+            if not byes:
+                continue
+            pool = [dict(x, pts=1.0) for x in base_pool if x["team"] not in byes and not (x["out_now"] and w == start)]
+            lineup = compute_lineup(slots, [], pool, lambda pid: False, key="pts")
+            empty = [sl["slot"] for sl in lineup if not sl["optimal"]]
+            starters_on_bye = [x["name"] for x in starters_now if x["team"] in byes]
+            if empty or len(starters_on_bye) >= 3:
+                row = {"week": w, "empty_slots": empty, "starters_on_bye": starters_on_bye,
+                       "bye_teams": sorted(byes), "severity": "CAN'T FILL" if empty else "THIN"}
+                bad_weeks.append(row)
+                if empty:
+                    alerts_by_week[w] = alerts_by_week.get(w, 0) + 1
+        if bad_weeks:
+            results.append({"league": lg["name"], "team": _team_name(my, league_users, user.get("display_name", "")),
+                            "weeks": bad_weeks, "cant_fill": sum(1 for b in bad_weeks if b["empty_slots"]),
+                            "first_problem": bad_weeks[0]["week"]})
+    results.sort(key=lambda r: (-r["cant_fill"], r["first_problem"], r["league"]))
+    return {
+        "from_week": start,
+        "summary": {"leagues": sum(1 for lg, (ro, _) in zip(leagues, fetched) if any(r["owner_id"] == user_id for r in ro)),
+                    "leagues_with_holes": sum(1 for r in results if r["cant_fill"]),
+                    "leagues_thin": sum(1 for r in results if not r["cant_fill"]),
+                    "worst_week": max(alerts_by_week, key=alerts_by_week.get) if alerts_by_week else None,
+                    "by_week": [{"week": w, "leagues": alerts_by_week.get(w, 0), "bye_teams": sorted(byes_by_week.get(w) or [])} for w in weeks if byes_by_week.get(w)]},
+        "results": results,
+        "note": "CAN'T FILL = no legal player for a slot that week. THIN = 3+ of your current starters are on bye. "
+                "Players on IR/PUP/SUS, taxi and with no NFL team are excluded; OUT players only for this week.",
+    }
+
+
+# ── ROSTER AGE PROFILE ────────────────────────────────────────────────────────
+
+CLIFF = {"RB": 27, "WR": 30, "TE": 31, "QB": 35, "DL": 30, "LB": 30, "DB": 30}
+
+@router.post("/analysis/age-profile")
+async def get_age_profile(req: UserRequest):
+    """Starter age by league, the players about to hit their position's age cliff, and a contention window."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    proj_array = await get_projections(season, current_week)
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"])) for lg in leagues])
+
+    results = []
+    for lg, (rosters, league_users) in zip(leagues, fetched):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        proj_map = build_proj_map(proj_array, lg.get("scoring_settings") or {})
+        slots = [x for x in (lg.get("roster_positions") or []) if x not in ("BN", "IR", "TAXI")]
+        pool = []
+        for pid in (str(x) for x in (my.get("players") or [])):
+            p = players_db.get(pid)
+            if p and p.get("age") and p.get("position") in CLIFF:
+                pool.append({"id": pid, "name": player_name(p), "position": p["position"], "team": p.get("team") or "FA",
+                             "age": int(p["age"]), "pts": proj_map.get(pid, 0)})
+        # "core" = best possible lineup by projection, so age reflects who actually drives the team
+        core = [sl["optimal"] for sl in compute_lineup(slots, [], pool, lambda pid: False, key="pts") if sl["optimal"]]
+        if not core:
+            continue
+        def avg(xs): return round(sum(xs) / len(xs), 1) if xs else None
+        core_age = avg([x["age"] for x in core])
+        by_pos = {}
+        for x in core:
+            by_pos.setdefault(x["position"], []).append(x["age"])
+        past_cliff = [x for x in core if x["age"] >= CLIFF[x["position"]]]
+        next_year = [x for x in core if x["age"] == CLIFF[x["position"]] - 1]
+        in_two = [x for x in core if x["age"] == CLIFF[x["position"]] - 2]
+        young = [x for x in pool if x["age"] <= 24]
+        share_aging = sum(x["pts"] for x in past_cliff + next_year) / max(sum(x["pts"] for x in core), 1e-9)
+        window = ("Closing" if share_aging >= 0.40 else "Win now" if (core_age or 0) >= 27.5
+                  else "Rising" if (core_age or 99) <= 25.0 else "Open")
+        results.append({
+            "league": lg["name"], "team": _team_name(my, league_users, user.get("display_name", "")),
+            "core_age": core_age, "roster_age": avg([x["age"] for x in pool]),
+            "pos_age": {k: avg(v) for k, v in by_pos.items()},
+            "past_cliff": [{k: x[k] for k in ("name", "position", "age")} for x in sorted(past_cliff, key=lambda x: -x["age"])],
+            "cliff_next_year": [{k: x[k] for k in ("name", "position", "age")} for x in next_year],
+            "cliff_in_two": [{k: x[k] for k in ("name", "position", "age")} for x in in_two],
+            "aging_points_pct": round(100 * share_aging), "young_assets": len(young),
+            "window": window,
+        })
+    results.sort(key=lambda r: -(r["core_age"] or 0))
+    n = len(results)
+    return {
+        "summary": {"leagues": n, "avg_core_age": round(sum(r["core_age"] for r in results) / n, 1) if n else None,
+                    "closing": sum(1 for r in results if r["window"] == "Closing"),
+                    "win_now": sum(1 for r in results if r["window"] == "Win now"),
+                    "open": sum(1 for r in results if r["window"] == "Open"),
+                    "rising": sum(1 for r in results if r["window"] == "Rising"),
+                    "cliff_next_year": sum(len(r["cliff_next_year"]) for r in results)},
+        "cliffs": CLIFF, "results": results,
+        "note": "Core = your best projected lineup. Age cliffs: RB 27, WR 30, TE 31, QB 35, IDP 30. "
+                "Closing = 40%+ of core points from players at or one year from their cliff.",
+    }
+
+
+# ── ROOKIE DRAFT BOARD ────────────────────────────────────────────────────────
+
+@router.post("/analysis/rookie-board")
+async def get_rookie_board(req: UserRequest):
+    """Next rookie draft per league: the picks you hold, where they'll likely land (from current standings),
+    and the positions your roster needs most for the future."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    proj_array = await get_projections(season, current_week)
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"]),
+                                                    get_traded_picks(lg["league_id"])) for lg in leagues])
+    results, total_picks, firsts = [], 0, 0
+    for lg, (rosters, league_users, traded) in zip(leagues, fetched):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        settings = lg.get("settings") or {}
+        rounds = int(settings.get("draft_rounds") or 4)
+        n = len(rosters)
+        draft_season = str(int(season) + 1)
+        held = [pk for pk in _owned_picks(my["roster_id"], rosters, traded, season, rounds, seasons_ahead=1) if pk["season"] == draft_season]
+        # projected slot: worst record picks first (wins asc, then points for asc)
+        def fp(r): st = r.get("settings") or {}; return (st.get("wins", 0) + 0.5 * st.get("ties", 0), (st.get("fpts", 0) or 0) + (st.get("fpts_decimal", 0) or 0) / 100)
+        order = sorted(rosters, key=fp)
+        slot_of = {r["roster_id"]: i + 1 for i, r in enumerate(order)}
+        users_by_roster = {r["roster_id"]: _team_name(r, league_users, f"Team {r['roster_id']}") for r in rosters}
+        picks = []
+        for pk in sorted(held, key=lambda x: (x["round"], slot_of.get(x["original_roster"], 99))):
+            sl = slot_of.get(pk["original_roster"], (n + 1) // 2)
+            picks.append({"round": pk["round"], "slot": sl, "label": f"{pk['round']}.{sl:02d}",
+                          "overall": (pk["round"] - 1) * n + sl,
+                          "via": None if pk["original_roster"] == my["roster_id"] else users_by_roster.get(pk["original_roster"]),
+                          "tier": "Early" if sl <= n / 3 else "Mid" if sl <= 2 * n / 3 else "Late"})
+        total_picks += len(picks); firsts += sum(1 for x in picks if x["round"] == 1)
+
+        # future needs: per position, demand vs young startable players and aging starters
+        proj_map = build_proj_map(proj_array, lg.get("scoring_settings") or {})
+        slots = [x for x in (lg.get("roster_positions") or []) if x not in ("BN", "IR", "TAXI")]
+        superflex = "SUPER_FLEX" in slots
+        te_prem = float((lg.get("scoring_settings") or {}).get("bonus_rec_te") or 0) > 0
+        needs = []
+        for pos in [x for x in ("QB", "RB", "WR", "TE") if x in league_positions(lg)]:
+            demand = sum(1 for x in slots if x == pos) + sum(0.5 for x in slots if x != pos and pos in SLOT_ELIGIBILITY.get(x, []) and len(SLOT_ELIGIBILITY.get(x, [])) > 1)
+            useful = [players_db[pid] for pid in (str(x) for x in (my.get("players") or [])) if (players_db.get(pid) or {}).get("position") == pos]
+            young = sum(1 for p in useful if (p.get("age") or 99) <= 25)
+            aging = sum(1 for p in useful if (p.get("age") or 0) >= CLIFF.get(pos, 30) - 1)
+            score = demand * 1.5 - young + 0.75 * aging - 0.25 * max(len(useful) - demand - 1, 0)
+            if pos == "QB" and superflex: score += 1.0
+            if pos == "TE" and te_prem: score += 0.5
+            needs.append({"position": pos, "score": round(score, 2), "young": young, "aging": aging, "rostered": len(useful)})
+        needs.sort(key=lambda x: -x["score"])
+        targets = [x["position"] for x in needs[:2]]
+        results.append({
+            "league": lg["name"], "team": users_by_roster.get(my["roster_id"]), "draft_season": draft_season,
+            "teams": n, "rounds": rounds, "picks": picks, "first_pick": picks[0]["label"] if picks else None,
+            "needs": needs, "targets": targets, "superflex": superflex, "te_premium": te_prem,
+            "my_projected_slot": slot_of.get(my["roster_id"]),
+        })
+    results.sort(key=lambda r: (r["picks"][0]["overall"] if r["picks"] else 999, r["league"]))
+    return {
+        "summary": {"leagues": len(results), "total_picks": total_picks, "firsts": firsts,
+                    "no_picks": sum(1 for r in results if not r["picks"]),
+                    "early_firsts": sum(1 for r in results for x in r["picks"] if x["round"] == 1 and x["tier"] == "Early")},
+        "results": results,
+        "note": "Draft slots are projected from current standings (worst record picks first; ties by points for) and "
+                "will move as the season finishes. Targets weigh lineup demand, young players you already have, "
+                "starters near their age cliff, superflex and TE premium.",
+    }
+
+
+# ── LEAGUE SHEET (lineup format / record / projection / needs) ────────────────
+
+SLOT_ABBR = {"SUPER_FLEX": "SF", "REC_FLEX": "W/T", "WRRB_FLEX": "W/R", "IDP_FLEX": "IDP"}
+
+def _roster_needs(slots, players, players_db):
+    """Positions where the roster is short of starters + depth. Same rules as My Position Needs:
+    flex demand is shared across eligible positions, SUPER_FLEX counts toward QB, +1 depth (+2 at QB)."""
+    counts = {}
+    for p in players:
+        for pos in (p.get("fantasy_positions") or [p.get("position")]):
+            counts[pos] = counts.get(pos, 0) + 1
+    needs = []
+    for pos in [x for x in ALL_POS if any(x in SLOT_ELIGIBILITY.get(sl, [sl]) for sl in slots)]:
+        dedicated = sum(1 for sl in slots if sl == pos)
+        share = 0.0
+        for sl in slots:
+            el = SLOT_ELIGIBILITY.get(sl, [sl])
+            if sl == pos or pos not in el or len(el) == 1:
+                continue
+            share += (1.0 if pos == "QB" else 0.0) if sl == "SUPER_FLEX" else 1.0 / len(el)
+        flex_need = int(share + 0.5)
+        depth = 2 if pos == "QB" and "SUPER_FLEX" in slots else 1 if pos in ("QB", "RB", "WR", "TE", "DL", "LB", "DB") else 0
+        need_n = dedicated + flex_need + depth
+        have = counts.get(pos, 0)
+        if have < need_n:
+            needs.append({"position": pos, "have": have, "need": need_n, "short": need_n - have,
+                          "critical": have < dedicated + flex_need})
+    needs.sort(key=lambda x: (not x["critical"], -x["short"]))
+    return needs
+
+
+@router.post("/analysis/league-sheet")
+async def get_league_sheet(req: UserRequest):
+    """One row per league: starting lineup format, record, this week's projection, and roster needs."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+    proj_array = await get_projections(season, week)
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"]),
+                                                    get_matchups(lg["league_id"], week)) for lg in leagues])
+    rows = []
+    for order, (lg, (rosters, league_users, matchups)) in enumerate(zip(leagues, fetched)):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        slots = [x for x in (lg.get("roster_positions") or []) if x not in ("BN", "IR", "TAXI")]
+        proj_map = build_proj_map(proj_array, lg.get("scoring_settings") or {})
+        my_m = next((m for m in matchups if m["roster_id"] == my["roster_id"]), None)
+        opp_m = next((m for m in matchups if my_m and m.get("matchup_id") is not None
+                      and m.get("matchup_id") == my_m.get("matchup_id") and m["roster_id"] != my["roster_id"]), None)
+        def total(m):
+            return round(sum(proj_map.get(str(x), 0) for x in ((m or {}).get("starters") or []) if x and str(x) != "0"), 1)
+        my_proj = total(my_m or my)
+        opp_proj = total(opp_m) if opp_m else None
+        st = my.get("settings") or {}
+        w, l, t = st.get("wins", 0), st.get("losses", 0), st.get("ties", 0)
+        gp = w + l + t
+        excl = {str(x) for x in (my.get("reserve") or [])} | {str(x) for x in (my.get("taxi") or [])}
+        active = [players_db[pid] for pid in (str(x) for x in (my.get("players") or []))
+                  if pid not in excl and pid in players_db and players_db[pid].get("team")]
+        rows.append({
+            "order": order, "league": lg["name"], "team": _team_name(my, league_users, user.get("display_name", "")),
+            "lineup": "/".join(SLOT_ABBR.get(x, x) for x in slots), "starters": len(slots),
+            "record": f"{w}-{l}" + (f"-{t}" if t else ""), "win_pct": round((w + 0.5 * t) / gp, 3) if gp else 0.0,
+            "proj": my_proj, "opp_proj": opp_proj,
+            "proj_win": (my_proj > opp_proj) if opp_proj is not None else None,
+            "needs": _roster_needs(slots, active, players_db),
+        })
+    return {
+        "week": week,
+        "summary": {"leagues": len(rows),
+                    "with_needs": sum(1 for r in rows if r["needs"]),
+                    "critical": sum(1 for r in rows if any(n["critical"] for n in r["needs"])),
+                    "proj_wins": sum(1 for r in rows if r["proj_win"]),
+                    "proj_losses": sum(1 for r in rows if r["proj_win"] is False),
+                    "total_proj": round(sum(r["proj"] for r in rows), 1)},
+        "results": rows,
+        "note": "Needs = positions with fewer active players (not IR/taxi) than starters + flex share + depth. "
+                "Red = can't even fill your starters there.",
+    }

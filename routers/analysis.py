@@ -1371,11 +1371,50 @@ def _evaluate_league(league, my_roster, rosters, traded_picks, players_db, proj_
     }
 
 
-async def _evaluate_all(req_username, week_override=None):
-    """Fetches + evaluates every league. Returns (user, season, current_week, [(league, my_team_name, eval)])."""
+async def _records_as_of(league, rosters, as_of_week):
+    """Rebuilds every roster's record / points for / points against from Sleeper's matchup history,
+    counting regular-season weeks 1 .. as_of_week-1 (i.e. standings entering as_of_week).
+    Returns copies of the rosters with their 'settings' replaced — the cached rosters are never touched."""
+    reg_end = int((league.get("settings") or {}).get("playoff_week_start") or 15) - 1
+    weeks = [w for w in range(1, as_of_week) if w <= reg_end]
+    tallies = {r["roster_id"]: {"wins": 0, "losses": 0, "ties": 0, "fpts": 0.0, "fpa": 0.0} for r in rosters}
+    for wk_m in await asyncio.gather(*[get_matchups(league["league_id"], w) for w in weeks]):
+        if not wk_m or all((m.get("points") or 0) == 0 for m in wk_m):
+            continue   # week not played (or no data)
+        pairs = {}
+        for m in wk_m:
+            if m.get("matchup_id") is not None:
+                pairs.setdefault(m["matchup_id"], []).append(m)
+        for pair in pairs.values():
+            if len(pair) != 2:
+                continue
+            a, b = pair
+            pa, pb = float(a.get("points") or 0), float(b.get("points") or 0)
+            for me, opp, mp, op in ((a, b, pa, pb), (b, a, pb, pa)):
+                t = tallies.get(me["roster_id"])
+                if t is None:
+                    continue
+                t["fpts"] += mp; t["fpa"] += op
+                t["wins" if mp > op else "losses" if mp < op else "ties"] += 1
+    out = []
+    for r in rosters:
+        t = tallies[r["roster_id"]]
+        st = dict(r.get("settings") or {})
+        st.update({"wins": t["wins"], "losses": t["losses"], "ties": t["ties"],
+                   "fpts": int(t["fpts"]), "fpts_decimal": round((t["fpts"] % 1) * 100),
+                   "fpts_against": int(t["fpa"]), "fpts_against_decimal": round((t["fpa"] % 1) * 100)})
+        out.append({**r, "settings": st})
+    return out
+
+
+async def _evaluate_all(req_username, week_override=None, as_of=False):
+    """Fetches + evaluates every league. Returns (user, season, current_week, [(league, my_team_name, eval)]).
+    as_of=True: when a past week is requested, records/standings are rebuilt as of that week
+    (roster strength still uses today's rosters — Sleeper keeps no roster history)."""
     user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req_username)
     user_id = user["user_id"]
     week = week_override or current_week
+    rebuild = as_of and week < current_week
     proj_array = await get_projections(season, week)
     out = []
     for league in leagues:
@@ -1386,9 +1425,14 @@ async def _evaluate_all(req_username, week_override=None):
         my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
         if not my_roster:
             continue
+        if rebuild:
+            rosters = await _records_as_of(league, rosters, week)
+            my_roster = next(r for r in rosters if r["owner_id"] == user_id)
         my_user = next((u for u in league_users if u["user_id"] == user_id), None)
         my_team_name = (my_user or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
-        ev = _evaluate_league(league, my_roster, rosters, traded_picks, players_db, proj_map, season, current_week)
+        ev = _evaluate_league(league, my_roster, rosters, traded_picks, players_db, proj_map, season,
+                              week if rebuild else current_week)
+        ev["league_id"] = league["league_id"]
         out.append((league, my_team_name, ev))
     return user, season, current_week, out
 
@@ -3083,7 +3127,8 @@ async def get_ir_eligible(req: UserRequest):
 async def get_power_rankings(req: UserRequest):
     """Every league's team ordered by how it is performing: a blend of record (win %, with a
     points-based adjustment so 'lucky' records don't over-rank) and roster rating (Juggernaut → Rebuild)."""
-    user, season, current_week, evals = await _evaluate_all(req.username, req.week)
+    user, season, current_week, evals = await _evaluate_all(req.username, req.week, as_of=True)
+    as_of_week = min(req.week or current_week, current_week)
     rows = []
     for league, team, ev in evals:
         gp = ev["games_played"]
@@ -3103,7 +3148,7 @@ async def get_power_rankings(req: UserRequest):
         else:
             score = 0.5 * record_score + 0.35 * roster_score + 0.15 * standing_score
         rows.append({
-            "league": league["name"], "team": team,
+            "league_id": league["league_id"], "league": league["name"], "team": team,
             "record": f"{ev['wins']}-{ev['losses']}" + (f"-{ev['ties']}" if ev["ties"] else ""),
             "win_pct": round(ev["win_pct"], 3), "games_played": gp,
             "rank": ev["rank"], "total_teams": ev["total_teams"], "in_playoffs": ev["in_playoffs"],
@@ -3121,7 +3166,8 @@ async def get_power_rankings(req: UserRequest):
     for r in rows:
         tiers[r["tier"]] = tiers.get(r["tier"], 0) + 1
     return {
-        "week": current_week,
+        "week": current_week, "as_of_week": as_of_week, "records_through": as_of_week - 1,
+        "username": req.username.lower(), "season": season,
         "summary": {
             "leagues": n,
             "top": rows[0] if rows else None, "bottom": rows[-1] if rows else None,

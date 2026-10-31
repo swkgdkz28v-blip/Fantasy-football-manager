@@ -7,7 +7,7 @@ import os
 
 from routers.analysis import router as analysis_router
 
-app = FastAPI(title="Fantasy Football Manager", version="10.32")
+app = FastAPI(title="Fantasy Football Manager", version="10.33")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,9 +20,15 @@ app.include_router(analysis_router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "10.32"}
+    return {"status": "ok", "version": "10.33"}
+
+FRONTEND = Path(__file__).parent / "frontend"
+
+# CSS, JS, icons and manifest live in frontend/ and are served under /static/...
+app.mount("/static", StaticFiles(directory=FRONTEND), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
-    html_path = Path(__file__).parent / "frontend" / "index.html"
-    return HTMLResponse(content=html_path.read_text())
+    # no-cache so a new deploy is picked up right away; the files it loads carry a ?v= version tag
+    return HTMLResponse(content=(FRONTEND / "index.html").read_text(),
+                        headers={"Cache-Control": "no-cache"})

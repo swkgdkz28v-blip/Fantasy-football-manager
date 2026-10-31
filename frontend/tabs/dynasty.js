@@ -1,43 +1,119 @@
-/* Fantasy Manager — tabs/dynasty.js (v10.33)
+/* Fantasy Manager — tabs/dynasty.js
    The Dynasty tab: its result screens and the list that opens them. Needs core.js loaded first. */
 
 // ── POWER RANKINGS VIEW ───────────────────────────────────────────────────────
+// Power-rankings history lives on this device only: { [week]: { at, ranks: { league_id: {rank, score, tier, league} } } }
+const PR_KEEP_WEEKS = 25;
+const prKey = data => `pr.${data.username || 'me'}.${data.season || ''}`;
+function prSave(data) {
+  const all = store.get(prKey(data), {});
+  const ranks = {};
+  data.results.forEach(r => { ranks[r.league_id || r.league] = { rank: r.power_rank, score: r.score, tier: r.tier, league: r.league }; });
+  all[data.as_of_week] = { at: Date.now(), ranks };
+  const weeks = Object.keys(all).map(Number).sort((x, y) => y - x);
+  weeks.slice(PR_KEEP_WEEKS).forEach(w => delete all[w]);
+  store.set(prKey(data), all);
+}
+function prPrevious(data) {
+  const all = store.get(prKey(data), {});
+  const earlier = Object.keys(all).map(Number).filter(w => w < data.as_of_week).sort((x, y) => y - x);
+  return earlier.length ? { week: earlier[0], ...all[earlier[0]] } : null;
+}
+
 function PowerRankingsView({ data }) {
+  const [open, setOpen] = useState(null);
+  const [showAll, setShowAll] = useState(false);
+  const prev = data?.results?.length ? prPrevious(data) : null;     // read before this run is saved
+  useEffect(() => { if (data?.results?.length && data.as_of_week) prSave(data); }, [data]);
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No leagues found.'));
   const sm = data.summary || {};
-  const [open, setOpen] = useState(null);
   const recColor = p => p > 0.5 ? 'var(--accent)' : p < 0.5 ? 'var(--accent2)' : 'var(--text2)';
   const scoreColor = v => v >= 70 ? 'var(--accent)' : v >= 50 ? 'var(--accent4)' : v >= 35 ? 'var(--accent3)' : 'var(--accent2)';
   const tierChips = Object.entries(sm.tiers || {});
+
+  // Diff against the most recent earlier week saved on this device
+  const diff = {};
+  if (prev) data.results.forEach(r => {
+    const p = prev.ranks[r.league_id || r.league];
+    diff[r.league_id || r.league] = p
+      ? { move: p.rank - r.power_rank, dScore: Math.round((r.score - p.score) * 10) / 10, tierFrom: p.tier !== r.tier ? p.tier : null }
+      : { isNew: true };
+  });
+  const moves = Object.entries(diff).filter(([, d]) => !d.isNew).map(([k, d]) => ({ k, ...d, r: data.results.find(x => (x.league_id || x.league) === k) }));
+  const risers = moves.filter(m => m.move > 0).sort((x, y) => y.move - x.move);
+  const fallers = moves.filter(m => m.move < 0).sort((x, y) => x.move - y.move);
+  const tierChanges = moves.filter(m => m.tierFrom);
+  const dropped = prev ? Object.entries(prev.ranks).filter(([k]) => !data.results.some(r => (r.league_id || r.league) === k)).map(([, v]) => v.league) : [];
+
+  const arrow = d => !d ? null
+    : d.isNew ? e('span', { style: { fontSize: 10, fontWeight: 800, color: 'var(--accent4)' } }, 'NEW')
+    : d.move > 0 ? e('span', { style: { fontSize: 12, fontWeight: 800, color: 'var(--accent)' } }, `▲${d.move}`)
+    : d.move < 0 ? e('span', { style: { fontSize: 12, fontWeight: 800, color: 'var(--accent2)' } }, `▼${-d.move}`)
+    : e('span', { style: { fontSize: 12, color: 'var(--text3)' } }, '–');
+  const moverLine = (m, up) => e('div', { key: m.k, style: { display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)' } },
+    e('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, m.r.league),
+    e('span', { style: { whiteSpace: 'nowrap', color: 'var(--text3)', fontSize: 12 } }, `#${m.r.power_rank + m.move} → #${m.r.power_rank} `),
+    e('b', { style: { color: up ? 'var(--accent)' : 'var(--accent2)', minWidth: 34, textAlign: 'right' } }, up ? `▲${m.move}` : `▼${-m.move}`));
+  const N = 5;
+
   return e('div', null,
-    e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 8 } }, `POWER RANKINGS · ${sm.leagues} TEAMS`),
+    e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 4 } }, `POWER RANKINGS · ${sm.leagues} TEAMS`),
+    e('div', { style: { fontSize: 12, color: 'var(--text3)', marginBottom: 10 } },
+      data.records_through > 0 ? `Standings through week ${data.records_through} (entering week ${data.as_of_week}).` : 'Before week 1 — roster rating only.'),
     e('div', { className: 'stat-row' },
       e(StatTile, { value: sm.above_500 ?? 0, label: 'Above .500', color: 'var(--accent)' }),
       e(StatTile, { value: sm.in_playoff_spot ?? 0, label: 'In Playoff Spot', color: 'var(--accent4)' }),
       e(StatTile, { value: sm.avg_score ?? 0, label: 'Avg Score', color: scoreColor(sm.avg_score || 0) }),
       e(StatTile, { value: (sm.leagues ?? 0) - (sm.above_500 ?? 0), label: 'At/Below .500', color: 'var(--accent2)' })
     ),
+    // ── Movement since the previous saved week ──
+    prev
+      ? e(Card, { borderColor: 'var(--accent4)' },
+          e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent4)', marginBottom: 8 } },
+            `Since week ${prev.week} · ${risers.length} up · ${fallers.length} down · ${moves.length - risers.length - fallers.length} same`),
+          risers.length === 0 && fallers.length === 0 && e('div', { style: { fontSize: 13, color: 'var(--text2)' } }, 'No rank changes.'),
+          risers.length > 0 && e('div', { style: { marginBottom: 8 } },
+            e('div', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent)', margin: '4px 0' } }, '📈 Biggest risers'),
+            (showAll ? risers : risers.slice(0, N)).map(m => moverLine(m, true))),
+          fallers.length > 0 && e('div', { style: { marginBottom: 4 } },
+            e('div', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent2)', margin: '4px 0' } }, '📉 Biggest fallers'),
+            (showAll ? fallers : fallers.slice(0, N)).map(m => moverLine(m, false))),
+          (risers.length > N || fallers.length > N) && e('button', { className: 'secondary', style: { width: '100%', marginTop: 8, padding: '8px', minHeight: 0, fontSize: 13 }, onClick: () => setShowAll(!showAll) }, showAll ? 'Show fewer' : 'Show all movers'),
+          tierChanges.length > 0 && e('div', { style: { fontSize: 12, color: 'var(--text2)', marginTop: 8, lineHeight: 1.6 } },
+            e('b', null, 'Tier changes: '), tierChanges.map(m => `${m.r.league} (${m.tierFrom} → ${m.r.tier})`).join(' · ')),
+          dropped.length > 0 && e('div', { style: { fontSize: 11, color: 'var(--text3)', marginTop: 6 } }, `No longer listed: ${dropped.join(', ')}`))
+      : e(Alert, { type: 'info' }, e('p', null,
+          `Saved this as week ${data.as_of_week}. Movement arrows appear once an earlier week is saved — run this again next week, or set the week chip to ${Math.max(data.as_of_week - 1, 1)} and run it once now.`)),
     tierChips.length > 0 && e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 } },
       tierChips.map(([t, n]) => e('span', { key: t, style: { fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid var(--border)', color: 'var(--text2)' } }, `${t}: ${n}`))),
     e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 10 } }, 'Best-performing team first. Tap a row for the score breakdown.'),
-    data.results.map(r => e('div', { key: r.league, onClick: () => setOpen(open === r.league ? null : r.league), style: { display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${r.tier_color}`, borderRadius: 8, marginBottom: 6, cursor: 'pointer', flexWrap: 'wrap' } },
-      e('span', { style: { fontFamily: 'Bebas Neue', fontSize: '1.3rem', color: 'var(--text3)', minWidth: 30, textAlign: 'right' } }, r.power_rank),
-      e('div', { style: { flex: 1, minWidth: 0 } },
-        e('div', { style: { fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
-        e('div', { style: { fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `${r.team} · #${r.rank}/${r.total_teams}${r.in_playoffs ? ' · playoff spot' : ''}`)),
-      e('div', { style: { textAlign: 'center', minWidth: 54 } },
-        e('div', { style: { fontSize: 13, fontWeight: 700, color: recColor(r.win_pct) } }, r.record),
-        e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'record')),
-      e('div', { style: { textAlign: 'center', minWidth: 84 } },
-        e('div', { style: { fontSize: 11, fontWeight: 700, color: r.tier_color } }, `${r.tier_icon} ${r.tier}`),
-        e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, `roster ${r.roster_composite}`)),
-      e('div', { style: { textAlign: 'right', minWidth: 44 } },
-        e('div', { style: { fontSize: 15, fontWeight: 800, color: scoreColor(r.score) } }, r.score),
-        e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'score')),
-      open === r.league && e('div', { style: { flexBasis: '100%', fontSize: 11, color: 'var(--text2)', paddingTop: 6, borderTop: '1px solid var(--border)', marginTop: 4 } },
-        `Record ${r.record_score} × 50% · Roster ${r.roster_score} × 35% · Standing ${r.standing_score} × 15% · PF ${r.pf} / PA ${r.pa} · starters ${Math.round(r.pts_vs_avg * 100)}% of league avg`)
-    )),
-    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
+    data.results.map(r => {
+      const d = diff[r.league_id || r.league];
+      return e('div', { key: r.league_id || r.league, onClick: () => setOpen(open === r.league ? null : r.league), style: { display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${r.tier_color}`, borderRadius: 8, marginBottom: 6, cursor: 'pointer', flexWrap: 'wrap' } },
+        e('div', { style: { minWidth: 30, textAlign: 'right' } },
+          e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.3rem', color: 'var(--text3)', lineHeight: 1 } }, r.power_rank),
+          arrow(d)),
+        e('div', { style: { flex: 1, minWidth: 0 } },
+          e('div', { style: { fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
+          e('div', { style: { fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `${r.team} · #${r.rank}/${r.total_teams}${r.in_playoffs ? ' · playoff spot' : ''}`)),
+        e('div', { style: { textAlign: 'center', minWidth: 54 } },
+          e('div', { style: { fontSize: 13, fontWeight: 700, color: recColor(r.win_pct) } }, r.record),
+          e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'record')),
+        e('div', { style: { textAlign: 'center', minWidth: 84 } },
+          e('div', { style: { fontSize: 11, fontWeight: 700, color: r.tier_color } }, `${r.tier_icon} ${r.tier}`),
+          e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, `roster ${r.roster_composite}`)),
+        e('div', { style: { textAlign: 'right', minWidth: 44 } },
+          e('div', { style: { fontSize: 15, fontWeight: 800, color: scoreColor(r.score) } }, r.score),
+          e('div', { style: { fontSize: 9, color: d && !d.isNew && d.dScore ? (d.dScore > 0 ? 'var(--accent)' : 'var(--accent2)') : 'var(--text3)' } },
+            d && !d.isNew && d.dScore ? `${d.dScore > 0 ? '+' : ''}${d.dScore}` : 'score')),
+        open === r.league && e('div', { style: { flexBasis: '100%', fontSize: 11, color: 'var(--text2)', paddingTop: 6, borderTop: '1px solid var(--border)', marginTop: 4 } },
+          `Record ${r.record_score} × 50% · Roster ${r.roster_score} × 35% · Standing ${r.standing_score} × 15% · PF ${r.pf} / PA ${r.pa} · starters ${Math.round(r.pts_vs_avg * 100)}% of league avg`,
+          d && d.tierFrom ? ` · tier was ${d.tierFrom}` : '')
+      );
+    }),
+    e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } },
+      'Rank history is saved on this device (one list per week). Past weeks rebuild records from Sleeper; roster strength always uses today’s rosters.'),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 4 } }, data.note)
   );
 }
 

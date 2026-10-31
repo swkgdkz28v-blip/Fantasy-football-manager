@@ -4,10 +4,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 import os
+import re
 
 from routers.analysis import router as analysis_router
 
-app = FastAPI(title="Fantasy Football Manager", version="10.33")
+# Version is set once, in frontend/index.html (<meta name="app-version">)
+_m = re.search(r'name="app-version" content="([^"]+)"', (Path(__file__).parent / "frontend" / "index.html").read_text())
+APP_VERSION = _m.group(1) if _m else "dev"
+
+app = FastAPI(title="Fantasy Football Manager", version=APP_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,7 +25,7 @@ app.include_router(analysis_router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "10.33"}
+    return {"status": "ok", "version": APP_VERSION}
 
 FRONTEND = Path(__file__).parent / "frontend"
 

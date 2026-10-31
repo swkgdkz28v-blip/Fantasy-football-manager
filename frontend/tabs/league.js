@@ -1,4 +1,4 @@
-/* Fantasy Manager — tabs/leagues.js (v10.33)
+/* Fantasy Manager — tabs/leagues.js
    The Leagues tab: its result screens and the list that opens them. Needs core.js loaded first. */
 
 // ── LEAGUE SHEET VIEW ─────────────────────────────────────────────────────────
@@ -187,11 +187,65 @@ function SeasonForecastView({ data }) {
   );
 }
 
+// ── TRADE DEADLINES VIEW ──────────────────────────────────────────────────────
+function TradeDeadlinesView({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  const fmtDate = d => { if (!d) return null; const x = new Date(d + 'T12:00:00'); return x.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }); };
+  const daysTo = d => { if (!d) return null; const t = new Date(d + 'T23:59:00'), n = new Date(); return Math.ceil((t - n) / 86400000); };
+  const recColor = p => p == null ? 'var(--text2)' : p > 0.5 ? 'var(--accent)' : p < 0.5 ? 'var(--accent2)' : 'var(--text2)';
+  const urgency = g => g.weeks_left === 0 ? 'var(--accent2)' : g.weeks_left === 1 ? 'var(--accent3)' : 'var(--accent4)';
+  const WIN = { Closing: 'var(--accent2)', 'Win now': 'var(--accent3)', Open: 'var(--accent4)', Rising: 'var(--accent)' };
+  const leagueRow = r => e('div', { key: r.league_id, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid var(--border)' } },
+    e('div', { style: { flex: 1, minWidth: 0 } },
+      e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
+      e('div', { style: { fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+        `${r.team} · #${r.rank}/${r.teams}${r.in_playoff_spot ? ' · playoff spot' : ''}`)),
+    e('div', { style: { textAlign: 'center', minWidth: 44 } },
+      e('div', { style: { fontSize: 14, fontWeight: 800, color: recColor(r.win_pct) } }, r.record),
+      e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'record')),
+    e('div', { style: { textAlign: 'right', minWidth: 52 } },
+      e('div', { style: { fontSize: 14, fontWeight: 800 } }, r.core_age != null ? r.core_age : '—'),
+      e('div', { style: { fontSize: 9, fontWeight: 700, color: WIN[r.window] || 'var(--text3)' } }, r.window ? `age · ${r.window}` : 'age')));
+  const nxt = sm.next;
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.this_week ?? 0, label: 'Close This Week', color: 'var(--accent2)' }),
+      e(StatTile, { value: sm.open ?? 0, label: 'Still Open', color: 'var(--accent4)' }),
+      e(StatTile, { value: sm.no_deadline ?? 0, label: 'No Deadline', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.passed ?? 0, label: 'Passed', color: 'var(--text3)' })),
+    nxt && e('div', { style: { fontSize: 13, color: 'var(--text2)', marginBottom: 12 } },
+      'Next: ', e('b', null, `${nxt.leagues.length} league${nxt.leagues.length === 1 ? '' : 's'} at week ${nxt.deadline_week}`),
+      nxt.closes_after ? ` — closes after ${fmtDate(nxt.closes_after)}${daysTo(nxt.closes_after) != null && daysTo(nxt.closes_after) >= 0 ? ` (${daysTo(nxt.closes_after) === 0 ? 'today' : `in ${daysTo(nxt.closes_after)} day${daysTo(nxt.closes_after) === 1 ? '' : 's'}`})` : ''}` : ''),
+    (data.groups || []).map(g => e(Card, { key: g.deadline_week, borderColor: urgency(g) },
+      e('div', { className: 'card-header', style: { marginBottom: 4 } },
+        e('div', null,
+          e('div', { className: 'card-title' }, `Week ${g.deadline_week} deadline`),
+          e('div', { className: 'card-subtitle' }, g.closes_after ? `Closes after the last week-${g.deadline_week} game · ${fmtDate(g.closes_after)}` : `Closes after the last week-${g.deadline_week} game`)),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontSize: 13, fontWeight: 800, color: urgency(g), whiteSpace: 'nowrap' } },
+            g.weeks_left === 0 ? 'THIS WEEK' : `${g.weeks_left} wk${g.weeks_left === 1 ? '' : 's'}`),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${g.leagues.length} league${g.leagues.length === 1 ? '' : 's'}`))),
+      g.leagues.map(leagueRow))),
+    !(data.groups || []).length && e(Alert, { type: 'info' }, e('p', null, 'No upcoming trade deadlines.')),
+    data.no_deadline?.length > 0 && e('details', { className: 'card', style: { borderLeft: '3px solid var(--accent)' } },
+      e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--accent)' } }, `♾️ No trade deadline (${data.no_deadline.length})`),
+      data.no_deadline.map(leagueRow)),
+    data.passed?.length > 0 && e('details', { className: 'card', style: { borderLeft: '3px solid var(--text3)' } },
+      e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--text3)' } }, `🔒 Deadline passed (${data.passed.length})`),
+      data.passed.map(r => e('div', { key: r.league_id, style: { display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, padding: '6px 0', borderBottom: '1px solid var(--border)', color: 'var(--text2)' } },
+        e('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
+        e('span', { style: { whiteSpace: 'nowrap' } }, `week ${r.deadline_week} · ${r.record}${r.core_age != null ? ` · age ${r.core_age}` : ''}`)))),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
+}
+
 // ── LEAGUES TAB LIST ─────────────────────────────────────────────────────
 FF.tab({ id: 'leagues', label: 'Leagues', icon: '📋', groups: [
   { label: 'Your leagues', features: [
     { id: 'league-sheet', title: 'League Sheet', sub: 'Lineup format, record, projection, needs', icon: '📋', tint: 'blue',
       endpoint: '/analysis/league-sheet', view: LeagueSheetView, badge: d => d.summary && cnt(d.summary.critical, 'red') },
+    { id: 'trade-deadlines', title: 'Trade Deadlines', sub: 'Every league’s deadline, soonest first', icon: '⏰', tint: 'red',
+      endpoint: '/analysis/trade-deadlines', view: TradeDeadlinesView, badge: d => d.summary && cnt(d.summary.this_week, 'red') },
     { id: 'season-records', title: 'Season Records', sub: 'Record, PF, PA and max PF', icon: '📒', tint: 'green',
       endpoint: '/analysis/season-records', view: SeasonRecordsView },
   ]},

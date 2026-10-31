@@ -169,6 +169,34 @@ const NEEDS = {
 };
 const resultKey = (f, week, input) => `${f.id}|${week}|${(input || '').trim().toLowerCase()}`;
 
+// ── NFL OPPONENTS ON PLAYER CARDS ─────────────────────────────────────────────
+// After a result loads, every NFL player/defense in it gets its opponent for that week added to its team,
+// e.g. "DET" → "DET @ GB" / "DET vs GB" / "DET · BYE". Fantasy-team names are never touched
+// (only objects with a name + an NFL position + an NFL team abbreviation are changed).
+const NFL_POS = new Set(['QB', 'RB', 'WR', 'TE', 'K', 'DEF', 'DL', 'LB', 'DB']);
+const NFL_TEAMS = new Set(['ARI','ATL','BAL','BUF','CAR','CHI','CIN','CLE','DAL','DEN','DET','GB','HOU','IND','JAX','KC','LV','LAC','LAR','MIA','MIN','NE','NO','NYG','NYJ','PHI','PIT','SEA','SF','TB','TEN','WAS']);
+const _schedCache = {};
+async function scheduleFor(username, week) {
+  if (!_schedCache[week]) _schedCache[week] = API.post('/schedule', { username, week }).catch(() => { delete _schedCache[week]; return null; });
+  return _schedCache[week];
+}
+function withOpponent(team, sched) {
+  const g = sched.teams[team];
+  return g ? `${team} ${g.home ? 'vs' : '@'} ${g.opp}` : `${team} · BYE`;
+}
+function addOpponents(node, sched, seen = new Set()) {
+  if (!sched || !sched.has_schedule || node == null || typeof node !== 'object' || seen.has(node)) return node;
+  seen.add(node);
+  if (Array.isArray(node)) { node.forEach(x => addOpponents(x, sched, seen)); return node; }
+  if (typeof node.team === 'string' && NFL_TEAMS.has(node.team) && NFL_POS.has(node.position) && (node.name || node.first_name)) {
+    node.nfl_team = node.team;
+    node.opp = sched.teams[node.team] ? sched.teams[node.team].opp : 'BYE';
+    node.team = withOpponent(node.team, sched);
+  }
+  Object.values(node).forEach(v => { if (v && typeof v === 'object') addOpponents(v, sched, seen); });
+  return node;
+}
+
 // ── SMALL SHELL PIECES ────────────────────────────────────────────────────────
 function Avatar({ me, username, onClick }) {
   const initials = ((me && me.display_name) || username || '?').slice(0, 2).toUpperCase();
@@ -347,7 +375,8 @@ function App() {
     try {
       const body = { username, week };
       if (f.needs) body[NEEDS[f.needs].field] = input.trim();
-      const data = await API.post(f.endpoint, body);
+      const [data, sched] = await Promise.all([API.post(f.endpoint, body), scheduleFor(username, week)]);
+      addOpponents(data, sched);
       setResults(r => ({ ...r, [key]: { loading: false, data, error: null, at: Date.now() } }));
     } catch (ex) {
       setResults(r => ({ ...r, [key]: { loading: false, data: null, error: ex.message, at: Date.now() } }));

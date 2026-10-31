@@ -1851,6 +1851,38 @@ function KDefLeaguesView({ data }) {
       e('div', { style: { fontSize: 11, color: 'var(--text2)', lineHeight: 1.6, marginTop: 4 } }, data.neither.join(' · '))));
 }
 
+// ── ILLEGAL IR VIEW ───────────────────────────────────────────────────────────
+function IrIneligibleView({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  if (!data.results?.length) return e(Alert, { type: 'success', title: '✅ All Clear' },
+    e('p', null, `Checked ${sm.leagues_checked ?? 0} leagues (${sm.leagues_with_ir ?? 0} with someone on IR) — every IR player is eligible.`));
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.leagues_flagged ?? 0, label: 'Leagues Locked', color: 'var(--accent2)' }),
+      e(StatTile, { value: sm.players ?? 0, label: 'Ineligible On IR', color: 'var(--accent2)' }),
+      e(StatTile, { value: sm.need_drop ?? 0, label: 'Need A Drop', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.leagues_checked ?? 0, label: 'Leagues Checked', color: 'var(--text3)' })),
+    e(Alert, { type: 'warning' }, e('p', null, 'Sleeper blocks adds, drops and trades in these leagues until the player is moved out of IR.')),
+    data.results.map(r => e(Card, { key: r.league, borderColor: 'var(--accent2)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e('div', { style: { fontSize: 11, color: 'var(--text3)', textAlign: 'right' } }, `IR allows ${r.allowed_statuses.join(', ')}`)),
+      r.ineligible.map(p => e('div', { key: p.id, style: { padding: '8px 0', borderBottom: '1px solid var(--border)' } },
+        e('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+          e(PosBadge, { pos: p.position }),
+          e('span', { style: { fontSize: 14, fontWeight: 700, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name),
+          e(Tag, { color: p.status === 'HEALTHY' ? 'green' : 'yellow' }, p.status)),
+        e('div', { style: { fontSize: 11, color: 'var(--text3)', marginTop: 2 } }, `${p.team} · ${p.why}${p.proj > 0 ? ` · proj ${p.proj} this week` : ''}`))),
+      e('div', { style: { fontSize: 13, fontWeight: 700, color: 'var(--text)', margin: '10px 0 4px' } }, `Fix: ${r.fix}`),
+      r.drop_candidates.length > 0 && e('div', { style: { fontSize: 12, color: 'var(--text2)' } },
+        'Weakest bench to drop: ', r.drop_candidates.map(d => `${d.name} (${d.position}, ${d.proj})`).join(', ')),
+      r.swap_in.length > 0 && e('div', { style: { fontSize: 12, color: 'var(--text2)', marginTop: 4 } },
+        'Could take the IR slot: ', r.swap_in.map(d => `${d.name} (${d.status})`).join(', '))
+    )),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
+}
+
 // ── SEASON FORECAST VIEW ──────────────────────────────────────────────────────
 function SeasonForecastView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
@@ -1996,6 +2028,7 @@ const SECTIONS = [
       { id: 'open', label: '⚡ Open Spots', endpoint: '/alerts/open-starter-spots' },
       { id: 'zero-proj', label: '0️⃣ Zero-Point Starters', endpoint: '/alerts/zero-projection-starters' },
       { id: 'ir-eligible', label: '🏥 Move To IR', endpoint: '/alerts/ir-eligible' },
+      { id: 'ir-ineligible', label: '🚫 Illegal IR', endpoint: '/alerts/ir-ineligible' },
       { id: 'k-def', label: '🦵 K / DEF Leagues', endpoint: '/analysis/k-def-leagues' },
     ]
   },
@@ -2163,6 +2196,8 @@ function App() {
         return e(WeeklyDigestView, { data });
       case 'rooting-guide':
         return e(RootingGuideView, { data });
+      case 'ir-ineligible':
+        return e(IrIneligibleView, { data });
       case 'k-def':
         return e(KDefLeaguesView, { data });
       case 'season-records':
@@ -2189,7 +2224,7 @@ function App() {
     e('div', { className: 'app-header' },
       e('div', { style: { display: 'flex', alignItems: 'baseline' } },
         e('span', { className: 'app-title' }, '🏈 Fantasy Manager'),
-        e('span', { className: 'app-version' }, 'v10.29')
+        e('span', { className: 'app-version' }, 'v10.30')
       ),
       e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, username || '—')
     ),

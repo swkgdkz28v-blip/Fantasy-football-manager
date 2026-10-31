@@ -3911,6 +3911,30 @@ async def get_bye_planner(req: UserRequest):
 
 CLIFF = {"RB": 27, "WR": 30, "TE": 31, "QB": 35, "DL": 30, "LB": 30, "DB": 30}
 
+
+def _core_age(league, my_roster, players_db, proj_map):
+    """Age of the best projected lineup ('core') and its contention window.
+    Returns dict(core, pool, core_age, window, past_cliff, next_year, in_two, share_aging) or None."""
+    slots = [x for x in (league.get("roster_positions") or []) if x not in ("BN", "IR", "TAXI")]
+    pool = []
+    for pid in (str(x) for x in (my_roster.get("players") or [])):
+        p = players_db.get(pid)
+        if p and p.get("age") and p.get("position") in CLIFF:
+            pool.append({"id": pid, "name": player_name(p), "position": p["position"], "team": p.get("team") or "FA",
+                         "age": int(p["age"]), "pts": proj_map.get(pid, 0)})
+    core = [sl["optimal"] for sl in compute_lineup(slots, [], pool, lambda pid: False, key="pts") if sl["optimal"]]
+    if not core:
+        return None
+    core_age = round(sum(x["age"] for x in core) / len(core), 1)
+    past_cliff = [x for x in core if x["age"] >= CLIFF[x["position"]]]
+    next_year = [x for x in core if x["age"] == CLIFF[x["position"]] - 1]
+    in_two = [x for x in core if x["age"] == CLIFF[x["position"]] - 2]
+    share_aging = sum(x["pts"] for x in past_cliff + next_year) / max(sum(x["pts"] for x in core), 1e-9)
+    window = ("Closing" if share_aging >= 0.40 else "Win now" if core_age >= 27.5
+              else "Rising" if core_age <= 25.0 else "Open")
+    return {"core": core, "pool": pool, "core_age": core_age, "window": window, "past_cliff": past_cliff,
+            "next_year": next_year, "in_two": in_two, "share_aging": share_aging}
+
 @router.post("/analysis/age-profile")
 async def get_age_profile(req: UserRequest):
     """Starter age by league, the players about to hit their position's age cliff, and a contention window."""
@@ -3925,29 +3949,17 @@ async def get_age_profile(req: UserRequest):
         if not my:
             continue
         proj_map = build_proj_map(proj_array, lg.get("scoring_settings") or {})
-        slots = [x for x in (lg.get("roster_positions") or []) if x not in ("BN", "IR", "TAXI")]
-        pool = []
-        for pid in (str(x) for x in (my.get("players") or [])):
-            p = players_db.get(pid)
-            if p and p.get("age") and p.get("position") in CLIFF:
-                pool.append({"id": pid, "name": player_name(p), "position": p["position"], "team": p.get("team") or "FA",
-                             "age": int(p["age"]), "pts": proj_map.get(pid, 0)})
         # "core" = best possible lineup by projection, so age reflects who actually drives the team
-        core = [sl["optimal"] for sl in compute_lineup(slots, [], pool, lambda pid: False, key="pts") if sl["optimal"]]
-        if not core:
+        ca = _core_age(lg, my, players_db, proj_map)
+        if not ca:
             continue
+        core, pool, core_age, window = ca["core"], ca["pool"], ca["core_age"], ca["window"]
+        past_cliff, next_year, in_two, share_aging = ca["past_cliff"], ca["next_year"], ca["in_two"], ca["share_aging"]
         def avg(xs): return round(sum(xs) / len(xs), 1) if xs else None
-        core_age = avg([x["age"] for x in core])
         by_pos = {}
         for x in core:
             by_pos.setdefault(x["position"], []).append(x["age"])
-        past_cliff = [x for x in core if x["age"] >= CLIFF[x["position"]]]
-        next_year = [x for x in core if x["age"] == CLIFF[x["position"]] - 1]
-        in_two = [x for x in core if x["age"] == CLIFF[x["position"]] - 2]
         young = [x for x in pool if x["age"] <= 24]
-        share_aging = sum(x["pts"] for x in past_cliff + next_year) / max(sum(x["pts"] for x in core), 1e-9)
-        window = ("Closing" if share_aging >= 0.40 else "Win now" if (core_age or 0) >= 27.5
-                  else "Rising" if (core_age or 99) <= 25.0 else "Open")
         st = my.get("settings") or {}
         w, l, t = st.get("wins", 0), st.get("losses", 0), st.get("ties", 0)
         results.append({
@@ -4164,3 +4176,73 @@ async def get_week_schedule(req: UserRequest):
             out[h] = {"opp": a, "home": True, "status": g.get("status")}
             out[a] = {"opp": h, "home": False, "status": g.get("status")}
     return {"season": season, "week": week, "teams": out, "has_schedule": bool(out)}
+
+
+# ── TRADE DEADLINES ───────────────────────────────────────────────────────────
+
+@router.post("/analysis/trade-deadlines")
+async def get_trade_deadlines(req: UserRequest):
+    """Every league's trade deadline, soonest first. Sleeper closes trading as soon as the final NFL game
+    of the deadline week finishes; a deadline of 99 (or anything outside weeks 1–18) means no deadline."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    fetched, proj_array = await asyncio.gather(
+        asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"])) for lg in leagues]),
+        get_projections(season, current_week))
+
+    raw = {lg["league_id"]: (lg.get("settings") or {}).get("trade_deadline") for lg in leagues}
+    weeks_needed = sorted({int(w) for w in raw.values() if isinstance(w, (int, float)) and 1 <= int(w) <= 18})
+    scheds = dict(zip(weeks_needed, await asyncio.gather(*[get_schedule(season, w) for w in weeks_needed])))
+
+    def closes(w):
+        games = scheds.get(w) or []
+        dates = sorted(g.get("date") for g in games if g.get("date"))
+        done = bool(games) and all((g.get("status") or "").lower() in ("complete", "final", "post_game") for g in games)
+        return (dates[-1] if dates else None), done
+
+    open_, none_, passed = [], [], []
+    for lg, (rosters, league_users) in zip(leagues, fetched):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        st = my.get("settings") or {}
+        w_, l_, t_ = st.get("wins", 0), st.get("losses", 0), st.get("ties", 0)
+        order = sorted(rosters, key=lambda r: (-(r.get("settings") or {}).get("wins", 0),
+                                               -((r.get("settings") or {}).get("fpts", 0) or 0)))
+        rank = next((i + 1 for i, r in enumerate(order) if r["roster_id"] == my["roster_id"]), None)
+        playoff_teams = int((lg.get("settings") or {}).get("playoff_teams") or 6)
+        row = {"league_id": lg["league_id"], "league": lg["name"], "team": _team_name(my, league_users, user.get("display_name", "")),
+               "record": f"{w_}-{l_}" + (f"-{t_}" if t_ else ""), "win_pct": round((w_ + 0.5 * t_) / (w_ + l_ + t_), 3) if (w_ + l_ + t_) else None,
+               "rank": rank, "teams": len(rosters), "in_playoff_spot": bool(rank and rank <= playoff_teams)}
+        ca = _core_age(lg, my, players_db, build_proj_map(proj_array, lg.get("scoring_settings") or {}))
+        row.update({"core_age": ca["core_age"] if ca else None, "window": ca["window"] if ca else None})
+        dl = raw[lg["league_id"]]
+        if not isinstance(dl, (int, float)) or not 1 <= int(dl) <= 18:
+            none_.append({**row, "status": "NO DEADLINE", "deadline_week": None}); continue
+        dl = int(dl)
+        last_date, week_done = closes(dl)
+        if dl < current_week or (dl == current_week and week_done):
+            passed.append({**row, "status": "PASSED", "deadline_week": dl, "closes_after": last_date})
+        else:
+            open_.append({**row, "status": "THIS WEEK" if dl == current_week else "OPEN", "deadline_week": dl,
+                          "weeks_left": dl - current_week, "closes_after": last_date})
+
+    open_.sort(key=lambda r: (r["deadline_week"], r["league"].lower()))
+    passed.sort(key=lambda r: (-r["deadline_week"], r["league"].lower()))
+    none_.sort(key=lambda r: r["league"].lower())
+    groups = []
+    for r in open_:
+        if not groups or groups[-1]["deadline_week"] != r["deadline_week"]:
+            groups.append({"deadline_week": r["deadline_week"], "closes_after": r["closes_after"],
+                           "weeks_left": r["weeks_left"], "leagues": []})
+        groups[-1]["leagues"].append(r)
+    return {
+        "current_week": current_week, "season": season,
+        "summary": {"leagues": len(open_) + len(none_) + len(passed), "open": len(open_),
+                    "this_week": sum(1 for r in open_ if r["status"] == "THIS WEEK"),
+                    "no_deadline": len(none_), "passed": len(passed),
+                    "next": groups[0] if groups else None},
+        "groups": groups, "no_deadline": none_, "passed": passed,
+        "note": "Sleeper closes trading as soon as the final NFL game of the deadline week finishes. "
+                "Dates come from the NFL schedule (date of that week's last game).",
+    }

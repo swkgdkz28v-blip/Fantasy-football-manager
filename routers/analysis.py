@@ -4145,3 +4145,19 @@ async def get_me(req: UserRequest):
         raise HTTPException(status_code=404, detail=f"Sleeper user '{req.username}' not found.")
     return {"username": req.username, "display_name": user.get("display_name") or req.username,
             "avatar": user.get("avatar"), "leagues": len(leagues), "season": season, "week": current_week}
+
+
+@router.post("/schedule")
+async def get_week_schedule(req: UserRequest):
+    """NFL games for a week as {team: {opp, home, status}}; teams missing from the map are on bye."""
+    st = await get_nfl_state()
+    season = st.get("season")
+    week = req.week or st.get("week") or 1
+    games = await get_schedule(season, week)
+    out = {}
+    for g in games:
+        h, a = g.get("home"), g.get("away")
+        if h and a:
+            out[h] = {"opp": a, "home": True, "status": g.get("status")}
+            out[a] = {"opp": h, "home": False, "status": g.get("status")}
+    return {"season": season, "week": week, "teams": out, "has_schedule": bool(out)}

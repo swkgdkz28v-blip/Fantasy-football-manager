@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
+import json
 import math
 import zlib
 from services.sleeper_client import *
@@ -1174,6 +1175,71 @@ async def get_position_needs(req: UserRequest):
 
 # ── UPGRADE RECOMMENDATIONS ───────────────────────────────────────────────────
 
+# ── MATCHUP STRENGTH (defense vs position) ────────────────────────────────────
+
+async def _dvp_samples(season, weeks_completed, players_db):
+    """Every played game this season as (position, defense_faced, week, raw_stats).
+    The opponent comes from the stats entry when Sleeper includes it, otherwise from that week's schedule."""
+    weeks = list(range(1, weeks_completed + 1))
+    if not weeks:
+        return []
+    stats_weeks, sched_weeks = await asyncio.gather(
+        asyncio.gather(*[get_stats(season, w) for w in weeks]),
+        asyncio.gather(*[get_schedule(season, w) for w in weeks]))
+    out = []
+    for w, entries, games in zip(weeks, stats_weeks, sched_weeks):
+        opp_of = {}
+        for g in games or []:
+            h, a = g.get("home"), g.get("away")
+            if h and a:
+                opp_of[h], opp_of[a] = a, h
+        for en in entries or []:
+            st = en.get("stats") or {}
+            if (st.get("gp") or 0) < 1:
+                continue
+            p = players_db.get(str(en.get("player_id"))) or {}
+            pos = p.get("position")
+            if pos not in ALL_POS_SET:
+                continue
+            team = en.get("team") or p.get("team")
+            opp = en.get("opponent") or opp_of.get(team)
+            if opp:
+                out.append((pos, opp, w, st))
+    return out
+
+
+def _dvp_multipliers(samples, ss, shrink_games=3.0):
+    """{position: {defense: {'mult', 'rank', 'n', 'tier'}}} using this league's scoring.
+    mult = fantasy points the defense allows to that position per game ÷ the average defense,
+    shrunk toward 1.0 when the defense has few games. rank 1 = easiest matchup.
+    tier: 'good' = 8 easiest, 'bad' = 8 hardest at that position."""
+    allowed = {}                       # (pos, def) -> {week: pts}
+    for pos, opp, w, st in samples:
+        pts = sum(ss.get(k, 0) * v for k, v in st.items() if isinstance(v, (int, float)))
+        d = allowed.setdefault((pos, opp), {})
+        d[w] = d.get(w, 0.0) + pts
+    by_pos = {}
+    for (pos, opp), wk in allowed.items():
+        by_pos.setdefault(pos, {})[opp] = (sum(wk.values()) / len(wk), len(wk))
+    out = {}
+    for pos, defs in by_pos.items():
+        if len(defs) < 8:
+            continue
+        avg = sum(v[0] for v in defs.values()) / len(defs)
+        if avg <= 0:
+            continue
+        rows = {}
+        for d, (pg, n) in defs.items():
+            raw = pg / avg
+            rows[d] = {"mult": round(1 + (raw - 1) * n / (n + shrink_games), 2), "n": n}
+        order = sorted(rows, key=lambda d: -rows[d]["mult"])
+        for i, d in enumerate(order):
+            rows[d]["rank"] = i + 1
+            rows[d]["tier"] = "good" if i < 8 else "bad" if i >= len(order) - 8 else None
+        out[pos] = rows
+    return out
+
+
 @router.post("/analysis/upgrade-recommendations")
 async def get_upgrade_recommendations(req: UserRequest):
     user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
@@ -1185,13 +1251,31 @@ async def get_upgrade_recommendations(req: UserRequest):
     stats_map = build_stats_map(stats_array)
     has_played = lambda pid: stats_map.get(str(pid), {}).get("gp", 0) >= 1
 
-    weekly_by_player = await _weekly_stats_by_player(season, weeks_completed)
+    weekly_by_player, dvp_samples, this_week = await asyncio.gather(
+        _weekly_stats_by_player(season, weeks_completed),
+        _dvp_samples(season, weeks_completed, players_db),
+        get_schedule(season, week))
+    opp_now = {}
+    for g in this_week or []:
+        h, a = g.get("home"), g.get("away")
+        if h and a:
+            opp_now[h], opp_now[a] = a, h
+    dvp_cache = {}                     # many leagues share scoring settings — compute once per scoring
 
     results = []
     for league in leagues:
         ss = league.get("scoring_settings") or {}
         proj_map = build_proj_map(proj_array, ss)
         starter_slots = [s for s in league.get("roster_positions", []) if s not in ("BN", "IR", "TAXI")]
+        skey = json.dumps(ss, sort_keys=True)
+        if skey not in dvp_cache:
+            dvp_cache[skey] = _dvp_multipliers(dvp_samples, ss)
+        dvp = dvp_cache[skey]
+
+        def matchup(p):
+            opp = opp_now.get(p.get("team") or "")
+            m = (dvp.get(p.get("position")) or {}).get(opp) if opp else None
+            return opp, (m["mult"] if m else 1.0), (m["rank"] if m else None), (m["tier"] if m else None)
 
         def score(pid):
             """Returns (week_proj, season_avg_per_game, std_dev, floor, games_played).
@@ -1224,10 +1308,14 @@ async def get_upgrade_recommendations(req: UserRequest):
             p = players_db.get(pid)
             if not p:
                 continue
-            wk, avg, sd, bl, gp = score(pid)
+            wk, avg, sd, floor, gp = score(pid)
+            opp, mult, mrank, mtier = matchup(p)
+            adj = round(floor * mult, 1)        # ranking value: conservative floor × matchup multiplier
             pool.append({
                 "id": pid, "name": player_name(p), "position": p.get("position", "UNK"), "team": p.get("team", ""),
-                "week_pts": wk, "ytd_avg": avg, "std": sd, "gp": gp, "blended": bl, "pts": bl,
+                "week_pts": wk, "ytd_avg": avg, "std": sd, "gp": gp, "floor": floor,
+                "mult": mult, "matchup_rank": mrank, "matchup": mtier, "vs": opp,
+                "blended": adj, "pts": adj,
                 "has_played": has_played(pid), "is_starter": pid in starter_set,
             })
 
@@ -1246,7 +1334,8 @@ async def get_upgrade_recommendations(req: UserRequest):
             "bench": [p for p in pool if p["id"] not in used][:8],
         })
 
-    return {"week": week, "weeks_completed": weeks_completed, "results": results}
+    return {"week": week, "weeks_completed": weeks_completed, "results": results,
+            "matchups_available": any(dvp_cache.values())}
 
 # ── LEAGUE EVALUATION (shared by Overview + Tier Records) ─────────────────────
 

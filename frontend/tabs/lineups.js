@@ -92,7 +92,7 @@ function UpgradeRecsView({ data }) {
     )),
     hasUpgrades.length > 0 && e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 10, lineHeight: 1.4 } },
       data.weeks_completed > 0
-        ? 'Floor = the lower of this week\'s projection and season average per game. Recommendations are ranked on floor; players with 0 games use projection only.'
+        ? 'Adj = floor × matchup. Floor is the lower of this week\'s projection and season average per game (projection only with 0 games). Matchup = points this week\'s opponent allows to that position vs the average defense: 🟢 8 easiest, 🔴 8 hardest.'
         : 'No completed weeks yet — recommendations use week projections only.'),
     optimal.length > 0 && e(Card, { borderColor: 'var(--accent)' },
       e('div', { style: { fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontWeight: 700 } }, `✅ Already Optimal (${optimal.length})`),

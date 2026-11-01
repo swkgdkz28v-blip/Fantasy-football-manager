@@ -2245,7 +2245,7 @@ async def get_bench_vs_fa(req: UserRequest):
             "optimal": not drops and not ir_moves,
         })
 
-    results.sort(key=lambda r: (-len(r["drops"]) - len(r["ir_moves"])))
+    # results stay in your Sleeper league order
     return {"week": week, "results": results,
             "summary": {"leagues": len(results), "with_drops": sum(1 for r in results if r["drops"]),
                         "drops": sum(len(r["drops"]) for r in results), "ir_moves": sum(len(r["ir_moves"]) for r in results)},

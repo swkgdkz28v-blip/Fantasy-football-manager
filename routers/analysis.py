@@ -2146,117 +2146,112 @@ async def get_starter_upgrades(req: UserRequest):
 
 @router.post("/analysis/bench-vs-fa")
 async def get_bench_vs_fa(req: UserRequest):
+    """Bench players a free agent clearly beats. IR-slot and taxi players are ignored. A bench player who is on bye
+    or injured is judged on his season average per game (not this week's 0), and an injured player who can go on
+    IR is suggested for IR instead of being dropped. Free agents on bye or OUT/IR are not suggested."""
     user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
     user_id = user["user_id"]
     week = req.week or current_week
+    weeks_completed = max(0, min(week - 1, current_week - 1))
+    MIN_GAIN = 2.0
+    OUT = ("OUT", "IR", "PUP", "SUS", "NA", "DOUBTFUL")
 
-    proj_array = await get_projections(season, week)
+    proj_array, byes, weekly_by_player = await asyncio.gather(
+        get_projections(season, week), bye_teams_for(season, week), _weekly_stats_by_player(season, weeks_completed))
     results = []
 
     for league in leagues:
         ss = league.get("scoring_settings") or {}
         proj_map = build_proj_map(proj_array, ss)
+        lg_pos = league_positions(league)
 
         rosters, league_users, matchups = await asyncio.gather(
-            get_rosters(league["league_id"]),
-            get_league_users(league["league_id"]),
-            get_matchups(league["league_id"], week)
-        )
-
+            get_rosters(league["league_id"]), get_league_users(league["league_id"]), get_matchups(league["league_id"], week))
         my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
         if not my_roster:
             continue
-
-        user_lookup = {u["user_id"]: u for u in league_users}
-        my_user = user_lookup.get(user_id)
-        my_team_name = (my_user or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
+        my_team_name = _team_name(my_roster, league_users, user.get("display_name", ""))
 
         my_matchup = next((m for m in matchups if m["roster_id"] == my_roster["roster_id"]), None)
-        starter_ids = set(str(pid) for pid in ((my_matchup or my_roster).get("starters") or []))
-        taxi_ids = set(str(pid) for pid in (my_roster.get("taxi") or []))
+        starter_ids = {str(pid) for pid in ((my_matchup or my_roster).get("starters") or [])}
+        taxi_ids = {str(pid) for pid in (my_roster.get("taxi") or [])}
+        ir_ids = {str(pid) for pid in (my_roster.get("reserve") or [])}
+        rostered_ids = {str(pid) for r in rosters for pid in (r.get("players") or [])}
 
-        # All rostered players
-        rostered_ids = set()
-        for r in rosters:
-            for pid in (r.get("players") or []):
-                rostered_ids.add(str(pid))
+        settings = league.get("settings") or {}
+        ir_allowed = _ir_allowed(settings)
+        ir_slots = max(int(settings.get("reserve_slots") or 0), sum(1 for x in (league.get("roster_positions") or []) if x == "IR"))
+        ir_open = max(ir_slots - len(ir_ids), 0)
 
-        RELEVANT_POSITIONS = ALL_POS_SET
+        def season_avg(pid):
+            avg, sd, gp, _ = _season_line(weekly_by_player.get(pid), ss)
+            return (avg, gp)
 
-        my_bench = []
-        for pid in (my_roster.get("players") or []):
-            if str(pid) in starter_ids or str(pid) in taxi_ids:
+        my_bench, ir_moves = [], []
+        for pid in (str(x) for x in (my_roster.get("players") or [])):
+            if pid in starter_ids or pid in taxi_ids or pid in ir_ids:
+                continue                                    # IR slot / taxi don't use a bench spot
+            p = players_db.get(pid)
+            if not p or p.get("position") not in lg_pos:
                 continue
-            p = players_db.get(str(pid))
-            if not p or p.get("position") not in RELEVANT_POSITIONS:
-                continue
-            my_bench.append({
-                "id": str(pid),
-                "name": player_name(p),
-                "position": p.get("position"),
-                "team": p.get("team", ""),
-                "pts": proj_map.get(str(pid), 0),
-                "injury_status": p.get("injury_status"),
-            })
-        my_bench.sort(key=lambda x: x["pts"])  # weakest first
+            inj = (p.get("injury_status") or "").upper()
+            on_bye = is_on_bye(p, byes, week)
+            proj = round(proj_map.get(pid, 0), 1)
+            avg, gp = season_avg(pid)
+            status = "bye" if on_bye else ("injured" if inj in OUT else "active")
+            row = {"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team", ""),
+                   "pts": proj, "avg": avg, "gp": gp, "injury_status": p.get("injury_status"), "status": status}
+            if status == "active":
+                row["compare_pts"], row["basis"] = proj, "this week"
+            elif gp >= 1:
+                row["compare_pts"], row["basis"] = avg, "season avg"
+            else:
+                continue                                    # no games yet and not playing — no fair comparison
+            if status == "injured" and inj in ir_allowed and ir_slots > 0:
+                ir_moves.append({**row, "ir_open": ir_open > 0})
+                continue                                    # stash on IR rather than drop
+            my_bench.append(row)
 
-        # Top FAs by position
+        # Free agents worth adding: playing this week, not OUT/IR, meaningful projection
         fa_by_pos = {}
         for pid, p in players_db.items():
-            if str(pid) in rostered_ids:
-                continue
             pos = p.get("position", "")
-            if pos not in RELEVANT_POSITIONS:
+            if pid in rostered_ids or pos not in lg_pos or not p.get("team"):
                 continue
-            pts = proj_map.get(str(pid), 0)
+            if is_on_bye(p, byes, week) or (p.get("injury_status") or "").upper() in OUT:
+                continue
+            pts = proj_map.get(pid, 0)
             if pts < 3:
                 continue
-            if pos not in fa_by_pos:
-                fa_by_pos[pos] = []
-            fa_by_pos[pos].append({
-                "id": str(pid),
-                "name": player_name(p),
-                "position": pos,
-                "team": p.get("team", ""),
-                "pts": pts,
-                "injury_status": p.get("injury_status"),
-            })
-
+            fa_by_pos.setdefault(pos, []).append({"id": pid, "name": player_name(p), "position": pos, "team": p.get("team", ""),
+                                                  "pts": round(pts, 1), "injury_status": p.get("injury_status")})
         for pos in fa_by_pos:
             fa_by_pos[pos].sort(key=lambda x: -x["pts"])
 
-        # Find drops: bench players worse than available FAs at same position
-        # Each FA can only be recommended once (deduplicate)
-        drops = []
-        MIN_GAIN = 2.0
-        used_fas = set()
-        for bench_p in sorted(my_bench, key=lambda x: x["pts"]):  # weakest bench first
-            pos = bench_p["position"]
-            # Find best unused FA at this position
-            best_fa = next((fa for fa in (fa_by_pos.get(pos) or [])
-                           if fa["id"] not in used_fas
-                           and fa["pts"] > bench_p["pts"] + MIN_GAIN), None)
+        drops, used_fas = [], set()
+        for bench_p in sorted(my_bench, key=lambda x: x["compare_pts"]):   # weakest first
+            best_fa = next((fa for fa in (fa_by_pos.get(bench_p["position"]) or [])
+                            if fa["id"] not in used_fas and fa["pts"] > bench_p["compare_pts"] + MIN_GAIN), None)
             if not best_fa:
                 continue
             used_fas.add(best_fa["id"])
-            drops.append({
-                "drop": bench_p,
-                "add": best_fa,
-                "gain": round(best_fa["pts"] - bench_p["pts"], 1),
-            })
-
+            drops.append({"drop": bench_p, "add": best_fa, "gain": round(best_fa["pts"] - bench_p["compare_pts"], 1)})
         drops.sort(key=lambda x: -x["gain"])
 
         results.append({
-            "league": league["name"],
-            "team": my_team_name,
-            "drops": drops,
-            "bench": my_bench,
-            "optimal": len(drops) == 0,
+            "league": league["name"], "team": my_team_name,
+            "drops": drops, "ir_moves": ir_moves, "bench": my_bench,
+            "ir_slots": ir_slots, "ir_open": ir_open,
+            "optimal": not drops and not ir_moves,
         })
 
-    results.sort(key=lambda r: -len(r["drops"]))
-    return {"week": week, "results": results}
+    results.sort(key=lambda r: (-len(r["drops"]) - len(r["ir_moves"])))
+    return {"week": week, "results": results,
+            "summary": {"leagues": len(results), "with_drops": sum(1 for r in results if r["drops"]),
+                        "drops": sum(len(r["drops"]) for r in results), "ir_moves": sum(len(r["ir_moves"]) for r in results)},
+            "note": "IR-slot and taxi players are skipped. Bench players on bye or injured are compared on their season average "
+                    "per game instead of this week's 0. Injured players the league allows on IR are listed under Move to IR, "
+                    "not as drops. Free agents on bye or OUT/IR are not suggested."}
 
 
 # ── WEEK REVIEW ───────────────────────────────────────────────────────────────

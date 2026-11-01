@@ -1,4 +1,4 @@
-/* Fantasy Manager — tabs/lineups.js (v10.33)
+/* Fantasy Manager — tabs/lineups.js
    The Lineups tab: its result screens and the list that opens them. Needs core.js loaded first. */
 
 function OptimalLineupView({ data }) {
@@ -165,51 +165,50 @@ function StarterUpgradesView({ data }) {
 // ── BENCH VS FA VIEW ──────────────────────────────────────────────────────────
 function BenchVsFaView({ data }) {
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
-  const hasDrop = data.results.filter(r => r.drops?.length > 0);
-  const optimal = data.results.filter(r => r.optimal);
-
+  const hasWork = data.results.filter(r => r.drops?.length || r.ir_moves?.length);
+  const fine = data.results.filter(r => r.optimal);
+  const sm = data.summary || {};
+  const STATUS = { bye: ['BYE', 'orange'], injured: ['OUT', 'red'] };
+  const side = (label, color, p, line) => e('div', null,
+    e('div', { style: { fontSize: 10, color, fontWeight: 800, marginBottom: 4 } }, label),
+    e('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+      e(PosBadge, { pos: p.position }),
+      e('div', { style: { minWidth: 0 } },
+        e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name),
+        e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, line))));
   return e('div', null,
     e('div', { className: 'stat-row' },
-      e(StatTile, { value: hasDrop.length, label: 'Leagues w/ Drops', color: 'var(--accent3)' }),
-      e(StatTile, { value: hasDrop.reduce((s,r) => s + r.drops.length, 0), label: 'Total Drops', color: 'var(--accent2)' }),
-      e(StatTile, { value: optimal.length, label: 'Roster Fine', color: 'var(--accent)' })
-    ),
-    hasDrop.map(r => e(Card, { key: r.league, borderColor: 'var(--accent2)' },
+      e(StatTile, { value: sm.with_drops ?? hasWork.length, label: 'Leagues w/ Drops', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.drops ?? 0, label: 'Drops', color: 'var(--accent2)' }),
+      e(StatTile, { value: sm.ir_moves ?? 0, label: 'Move To IR', color: 'var(--accent4)' }),
+      e(StatTile, { value: fine.length, label: 'Roster Fine', color: 'var(--accent)' })),
+    hasWork.map(r => e(Card, { key: r.league, borderColor: r.drops.length ? 'var(--accent2)' : 'var(--accent4)' },
       e('div', { className: 'card-header' },
         e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
-        e(Tag, { color: 'red' }, `${r.drops.length} drop${r.drops.length > 1 ? 's' : ''}`)
-      ),
+        e('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' } },
+          r.drops.length > 0 && e(Tag, { color: 'red' }, `${r.drops.length} drop${r.drops.length > 1 ? 's' : ''}`),
+          r.ir_moves.length > 0 && e(Tag, { color: 'blue' }, `${r.ir_moves.length} to IR`))),
       r.drops.map((d, i) => e('div', { key: i, className: 'swap-card', style: { marginBottom: 6 } },
-        e('div', null,
-          e('div', { style: { fontSize: 9, color: 'var(--accent2)', fontWeight: 700, marginBottom: 4 } }, '✂ DROP'),
-          e('div', { style: { display: 'flex', alignItems: 'center', gap: 5 } },
-            e(PosBadge, { pos: d.drop.position }),
-            e('div', null,
-              e('div', { style: { fontSize: 12, fontWeight: 600 } }, d.drop.name),
-              e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${d.drop.team} · ${d.drop.pts} pts`)
-            )
-          )
-        ),
+        side('✂ DROP', 'var(--accent2)', d.drop,
+          d.drop.status === 'active' ? `${d.drop.team} · ${d.drop.pts} pts` : `${d.drop.team} · ${STATUS[d.drop.status][0]} · avg ${d.drop.avg}`),
         e('div', { style: { textAlign: 'center' } },
-          e('div', { style: { fontSize: 11, fontWeight: 700, color: 'var(--accent)' } }, `+${d.gain}`),
-          e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'gain')
-        ),
-        e('div', null,
-          e('div', { style: { fontSize: 9, color: 'var(--accent)', fontWeight: 700, marginBottom: 4 } }, '➕ ADD'),
-          e('div', { style: { display: 'flex', alignItems: 'center', gap: 5 } },
-            e(PosBadge, { pos: d.add.position }),
-            e('div', null,
-              e('div', { style: { fontSize: 12, fontWeight: 600 } }, d.add.name),
-              e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${d.add.team} · ${d.add.pts} pts`)
-            )
-          )
-        )
-      ))
+          e('div', { style: { fontSize: 13, fontWeight: 800, color: 'var(--accent)' } }, `+${d.gain}`),
+          e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, d.drop.basis === 'season avg' ? 'vs avg' : 'gain')),
+        side('➕ ADD', 'var(--accent)', d.add, `${d.add.team} · ${d.add.pts} pts`))),
+      r.ir_moves.length > 0 && e('div', { style: { marginTop: 6 } },
+        e('div', { style: { fontSize: 11, fontWeight: 800, color: 'var(--accent4)', marginBottom: 4 } },
+          `🏥 Move to IR instead of dropping${r.ir_open ? ` · ${r.ir_open} IR slot${r.ir_open > 1 ? 's' : ''} open` : ' · IR is full'}`),
+        r.ir_moves.map(p => e('div', { key: p.id, className: 'player-row' },
+          e(PosBadge, { pos: p.position }),
+          e('span', { className: 'player-name' }, p.name),
+          e('span', { className: 'player-team' }, p.team),
+          e(Tag, { color: 'red' }, (p.injury_status || '').toUpperCase()),
+          e('span', { className: 'player-pts' }, `avg ${p.avg}`))))
     )),
-    optimal.length > 0 && e(Card, { borderColor: 'var(--accent)' },
-      e('div', { style: { fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontWeight: 700 } }, `✅ Roster Fine (${optimal.length})`),
-      optimal.map(l => e('div', { key: l.league, style: { fontSize: 12, padding: '4px 0', borderBottom: '1px solid var(--border)' } }, l.league))
-    )
+    fine.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontWeight: 700 } }, `✅ Roster Fine (${fine.length})`),
+      fine.map(l => e('div', { key: l.league, style: { fontSize: 13, padding: '5px 0', borderBottom: '1px solid var(--border)' } }, l.league))),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
   );
 }
 

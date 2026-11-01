@@ -128,7 +128,12 @@ function MovesList({ moves, ptsKey = 'pts', subKey, title = '🔄 Moves To Make'
           hasAvg && stat('Avg', `${p[subKey]}${p.std != null ? ` ±${p.std}` : ''}`),
           hasAvg && stat('Games', p.gp),
           subKey && p.gp === 0 && stat('Games', '0'),
-          subKey && p.blended != null && hasAvg && stat('Floor', p.blended, 'var(--accent3)')
+          subKey && p.mult == null && p.blended != null && hasAvg && stat('Floor', p.blended, 'var(--accent3)'),
+          // matchup-aware screens (Upgrade Recs): floor, matchup multiplier, and the adjusted value used for ranking
+          p.mult != null && hasAvg && stat('Floor', p.floor),
+          p.mult != null && stat('Matchup', `×${p.mult.toFixed(2)}${p.matchup === 'good' ? ' 🟢' : p.matchup === 'bad' ? ' 🔴' : ''}`,
+            p.matchup === 'good' ? 'var(--accent)' : p.matchup === 'bad' ? 'var(--accent2)' : 'var(--text2)'),
+          p.mult != null && stat('Adj', p.blended, 'var(--accent3)')
         )
       );
     })

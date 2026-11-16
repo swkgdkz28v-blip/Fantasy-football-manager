@@ -2786,13 +2786,18 @@ async def get_playoff_odds(req: UserRequest):
         else:
             status, color, advice = "ELIMINATED", "#ff5c5c", "Out of it. Full pivot: sell every aging asset, play the young guys, maximize next year's draft."
 
-        rank_now = sorted(team_ids, key=lambda r: (-base_wins[r], -base_pf[r])).index(my_roster["roster_id"]) + 1
+        standings = sorted(team_ids, key=lambda r: (-base_wins[r], -base_pf[r]))
+        rank_now = standings.index(my_roster["roster_id"]) + 1
+        line_wins = base_wins[standings[min(playoff_spots, len(standings)) - 1]]          # last team in
+        first_out_wins = base_wins[standings[playoff_spots]] if playoff_spots < len(standings) else None
         others = sorted([(sim[r]["playoff_pct"], team_name(next(x for x in rosters if x["roster_id"] == r)), base_wins[r]) for r in team_ids], key=lambda t: -t[0])
 
         results.append({
             "league": league["name"], "team": my_team_name,
             "record": f"{st_of(my_roster).get('wins', 0)}-{st_of(my_roster).get('losses', 0)}" + (f"-{st_of(my_roster)['ties']}" if st_of(my_roster).get("ties") else ""),
             "rank": rank_now, "total_teams": len(team_ids), "playoff_spots": playoff_spots, "byes": _byes_for(playoff_spots),
+            "my_wins": base_wins[my_roster["roster_id"]], "my_pf": round(base_pf[my_roster["roster_id"]], 1),
+            "line_wins": line_wins, "first_out_wins": first_out_wins,
             "games_left": len(schedule), "games_sampled": len(scores[my_roster["roster_id"]]),
             "my_mu": round(strength[my_roster["roster_id"]][0], 1), "my_sd": round(strength[my_roster["roster_id"]][1], 1),
             "league_mu": round(league_mu, 1),
@@ -4329,4 +4334,42 @@ async def get_trade_deadlines(req: UserRequest):
         "groups": groups, "no_deadline": none_, "passed": passed,
         "note": "Sleeper closes trading as soon as the final NFL game of the deadline week finishes. "
                 "Dates come from the NFL schedule (date of that week's last game).",
+    }
+
+
+# ── PLAYOFF PICTURE (in a spot by seed, then everyone else by odds) ───────────
+
+@router.post("/analysis/playoff-picture")
+async def get_playoff_picture(req: UserRequest):
+    """Every league split into: currently holding a playoff spot (ordered by seed, then cushion over the
+    first team out) and currently out (ordered by playoff odds). Uses the Playoff Odds simulation."""
+    base = await get_playoff_odds(req)
+    inside, outside = [], []
+    for r in base["results"]:
+        row = {k: r[k] for k in ("league", "team", "record", "rank", "total_teams", "playoff_spots", "byes",
+                                 "playoff_pct", "bye_pct", "exp_wins", "status", "color", "games_left", "my_pf")}
+        ng = r.get("next_game") or {}
+        row["next"] = {"opp": ng.get("opp_name"), "win_prob": ng.get("win_prob"), "swing": ng.get("swing")} if ng else None
+        if r["rank"] <= r["playoff_spots"]:
+            row["seed"] = r["rank"]
+            row["has_bye"] = r["rank"] <= r["byes"]
+            row["cushion"] = None if r["first_out_wins"] is None else round(r["my_wins"] - r["first_out_wins"], 1)
+            inside.append(row)
+        else:
+            row["games_back"] = round(r["line_wins"] - r["my_wins"], 1)
+            outside.append(row)
+    inside.sort(key=lambda x: (x["seed"], -(x["cushion"] if x["cushion"] is not None else 99), -x["playoff_pct"]))
+    outside.sort(key=lambda x: (-x["playoff_pct"], x["games_back"], x["league"]))
+    n = len(inside) + len(outside)
+    return {
+        "week": base["week"], "sims": base["sims"],
+        "summary": {"leagues": n, "in": len(inside), "out": len(outside),
+                    "byes": sum(1 for x in inside if x["has_bye"]),
+                    "shaky": sum(1 for x in inside if x["playoff_pct"] < 60),
+                    "live_out": sum(1 for x in outside if x["playoff_pct"] >= 10),
+                    "dead": sum(1 for x in outside if x["playoff_pct"] < 10),
+                    "exp_playoff_teams": round(sum(x["playoff_pct"] for x in inside + outside) / 100, 1)},
+        "inside": inside, "outside": outside,
+        "note": "In a spot = current seed by wins, then points for. Cushion = wins ahead of the first team out. "
+                "Odds come from the Playoff Odds simulation. Leagues past their regular season aren't listed.",
     }

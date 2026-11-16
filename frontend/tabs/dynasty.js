@@ -659,9 +659,57 @@ function LiveDraftView({ data }) {
   );
 }
 
+// ── PLAYOFF PICTURE VIEW ──────────────────────────────────────────────────────
+function PlayoffPictureView({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  if (!sm.leagues) return e(Alert, { type: 'info' }, e('p', null, 'No leagues still in the regular season.'));
+  const pctColor = p => p >= 85 ? 'var(--accent)' : p >= 60 ? 'var(--accent4)' : p >= 35 ? 'var(--accent3)' : p >= 10 ? '#ff8c42' : 'var(--accent2)';
+  const row = (r, left, right) => e('div', { key: r.league, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${pctColor(r.playoff_pct)}`, borderRadius: 10, marginBottom: 6 } },
+    left,
+    e('div', { style: { flex: 1, minWidth: 0 } },
+      e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
+      e('div', { style: { fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+        `${r.team} · ${r.record} · #${r.rank}/${r.total_teams}${r.next && r.next.opp ? ` · next vs ${r.next.opp}${r.next.swing >= 20 ? ' 🔥' : ''}` : ''}`)),
+    right,
+    e('div', { style: { textAlign: 'right', minWidth: 52 } },
+      e('div', { style: { fontSize: 15, fontWeight: 800, color: pctColor(r.playoff_pct) } }, `${r.playoff_pct}%`),
+      e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'odds')));
+  const seedBadge = r => e('div', { style: { minWidth: 34, textAlign: 'center' } },
+    e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.5rem', lineHeight: 1, color: r.has_bye ? 'var(--accent)' : 'var(--text)' } }, r.seed),
+    e('div', { style: { fontSize: 9, color: r.has_bye ? 'var(--accent)' : 'var(--text3)', fontWeight: r.has_bye ? 700 : 400 } }, r.has_bye ? 'BYE' : 'seed'));
+  const cushion = r => e('div', { style: { textAlign: 'center', minWidth: 46 } },
+    e('div', { style: { fontSize: 13, fontWeight: 700, color: r.cushion == null ? 'var(--text3)' : r.cushion >= 2 ? 'var(--accent)' : r.cushion >= 1 ? 'var(--accent3)' : 'var(--accent2)' } },
+      r.cushion == null ? '—' : `+${r.cushion}`),
+    e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'cushion'));
+  const gb = r => e('div', { style: { textAlign: 'center', minWidth: 46 } },
+    e('div', { style: { fontSize: 13, fontWeight: 700, color: r.games_back <= 1 ? 'var(--accent3)' : 'var(--accent2)' } }, r.games_back <= 0 ? 'tied' : r.games_back),
+    e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, r.games_back <= 0 ? 'on PF' : 'GB'));
+  const live = data.outside.filter(r => r.playoff_pct >= 10), dead = data.outside.filter(r => r.playoff_pct < 10);
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: `${sm.in}/${sm.leagues}`, label: 'In A Spot', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.byes ?? 0, label: 'Holding A Bye', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.live_out ?? 0, label: 'Out, Still Alive', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.exp_playoff_teams ?? 0, label: 'Expected Playoff Teams', color: 'var(--accent4)' })),
+    sm.shaky > 0 && e('div', { style: { fontSize: 12, color: 'var(--accent3)', marginBottom: 10 } }, `⚠️ ${sm.shaky} of your playoff spots are under 60% to hold.`),
+    data.inside.length > 0 && e('div', null,
+      secTitle(`✅ In a playoff spot (${data.inside.length}) — by seed`, 'var(--accent)'),
+      data.inside.map(r => row(r, seedBadge(r), cushion(r)))),
+    live.length > 0 && e('div', { style: { marginTop: 14 } },
+      secTitle(`🎯 Out — still alive (${live.length}) — best odds first`, 'var(--accent3)'),
+      live.map(r => row(r, null, gb(r)))),
+    dead.length > 0 && e('details', { className: 'card', style: { marginTop: 14, borderLeft: '3px solid var(--accent2)' } },
+      e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--accent2)' } }, `🔨 Under 10% (${dead.length}) — sell mode`),
+      dead.map(r => lineRow(r.league, `${r.league} · ${r.record}`, `${r.games_back > 0 ? `${r.games_back} GB · ` : ''}${r.playoff_pct}%`, 'var(--accent2)'))),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 10 } }, data.note));
+}
+
 // ── DYNASTY TAB LIST ─────────────────────────────────────────────────────
 FF.tab({ id: 'dynasty', label: 'Dynasty', icon: '🏆', groups: [
   { label: 'Team strength', features: [
+    { id: 'playoff-picture', title: 'Playoff Picture', sub: 'In a spot by seed, the rest by odds', icon: '🎟️', tint: 'green',
+      endpoint: '/analysis/playoff-picture', view: PlayoffPictureView, badge: d => d.summary && { n: `${d.summary.in}/${d.summary.leagues}`, color: 'green' } },
     { id: 'power-rankings', title: 'Power Rankings', sub: 'All your teams, best to worst', icon: '🏆', tint: 'orange',
       endpoint: '/analysis/power-rankings', view: PowerRankingsView },
     { id: 'tier-records', title: 'Tier Records', sub: 'Roster tier vs record, with verdicts', icon: '🏁', tint: 'red',

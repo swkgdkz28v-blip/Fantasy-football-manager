@@ -117,6 +117,16 @@ async def get_traded_picks(league_id: str) -> list:
     except Exception:
         return []
 
+# ── PLAYOFF BRACKETS ──────────────────────────────────────────────────────────
+
+async def get_bracket(league_id: str, kind: str = "winners") -> list:
+    """Sleeper playoff bracket rows {r, m, t1, t2, w, l, p?, t1_from?, t2_from?}; [] before it exists."""
+    try:
+        data = await _get(f"{BASE_URL}/league/{league_id}/{kind}_bracket")
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
 # ── DRAFTS ────────────────────────────────────────────────────────────────────
 
 async def get_drafts(league_id: str) -> list:

@@ -4373,3 +4373,133 @@ async def get_playoff_picture(req: UserRequest):
         "note": "In a spot = current seed by wins, then points for. Cushion = wins ahead of the first team out. "
                 "Odds come from the Playoff Odds simulation. Leagues past their regular season aren't listed.",
     }
+
+
+# ── PLAYOFF CALENDAR (season end, playoff start, where I stand) ───────────────
+
+ROUND_NAMES = {1: "Final", 2: "Semifinal", 3: "Quarterfinal", 4: "Round of 16"}
+
+def _bracket_status(bracket, roster_id):
+    """Where a roster stands in a Sleeper bracket: None if not in it, else dict(alive, round, place, eliminated_round)."""
+    mine = [m for m in bracket if roster_id in (m.get("t1"), m.get("t2"))]
+    if not mine:
+        return None
+    rounds = max((m.get("r") or 0) for m in bracket) or 1
+    lost = [m for m in mine if m.get("l") == roster_id and not m.get("p")]
+    placed = next((m for m in mine if m.get("p") and m.get("w") is not None), None)   # placement game decided
+    last = max(mine, key=lambda m: m.get("r") or 0)
+    out = {"round": last.get("r"), "rounds": rounds, "alive": not lost, "eliminated_round": lost[0].get("r") if lost else None, "place": None}
+    if placed:
+        out["place"] = placed["p"] if placed["w"] == roster_id else placed["p"] + 1
+        out["alive"] = False
+    elif any(m.get("p") for m in mine) and not lost:
+        out["alive"] = placed is None and any(m.get("p") == 1 for m in mine)   # in the final, undecided
+    out["round_name"] = ROUND_NAMES.get(rounds - (out["round"] or 1) + 1, f"Round {out['round']}")
+    return out
+
+
+@router.post("/analysis/playoff-calendar")
+async def get_playoff_calendar(req: UserRequest):
+    """Per league: last regular-season week, playoff start, championship week (with dates), and whether / where the
+    user's team stands — current seed or games back before the playoffs, bracket position once they start."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"]),
+                                                    get_bracket(lg["league_id"], "winners"), get_bracket(lg["league_id"], "losers"))
+                                     for lg in leagues])
+    weeks_needed = set()
+    for lg in leagues:
+        st = lg.get("settings") or {}
+        pws = int(st.get("playoff_week_start") or 15)
+        weeks_needed |= {pws - 1, pws}
+    weeks_needed = sorted(w for w in weeks_needed if 1 <= w <= 18)
+    scheds = dict(zip(weeks_needed, await asyncio.gather(*[get_schedule(season, w) for w in weeks_needed])))
+    def dates(w):
+        ds = sorted(g.get("date") for g in (scheds.get(w) or []) if g.get("date"))
+        return (ds[0], ds[-1]) if ds else (None, None)
+
+    rows = []
+    for lg, (rosters, league_users, wb, lb) in zip(leagues, fetched):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        st = lg.get("settings") or {}
+        pws = int(st.get("playoff_week_start") or 15)
+        reg_end = pws - 1
+        spots = int(st.get("playoff_teams") or 6)
+        rtype = int(st.get("playoff_round_type") or 0)      # 0 one week/round, 1 two-week final, 2 two weeks/round
+        rounds = max((m.get("r") or 0) for m in wb) if wb else max(1, math.ceil(math.log2(max(spots, 2))))
+        weeks_long = rounds * 2 if rtype == 2 else rounds + (1 if rtype == 1 else 0)
+        final_week = pws + weeks_long - 1
+        byes = _byes_for(spots)
+        def sk(r):
+            x = r.get("settings") or {}
+            return (-(x.get("wins", 0) + 0.5 * x.get("ties", 0)), -((x.get("fpts", 0) or 0) + (x.get("fpts_decimal", 0) or 0) / 100))
+        standings = sorted(rosters, key=sk)
+        seed = standings.index(my) + 1
+        mst = my.get("settings") or {}
+        wins = mst.get("wins", 0) + 0.5 * mst.get("ties", 0)
+        wins_of = lambda i: (standings[i].get("settings") or {}).get("wins", 0) + 0.5 * (standings[i].get("settings") or {}).get("ties", 0)
+        record = f"{mst.get('wins', 0)}-{mst.get('losses', 0)}" + (f"-{mst['ties']}" if mst.get("ties") else "")
+
+        if lg.get("status") == "complete" or current_week > final_week:
+            phase = "COMPLETE"
+        elif current_week >= pws:
+            phase = "PLAYOFFS"
+        elif current_week == reg_end:
+            phase = "FINAL WEEK"
+        else:
+            phase = "REGULAR SEASON"
+
+        bw, bl = _bracket_status(wb, my["roster_id"]), _bracket_status(lb, my["roster_id"])
+        if phase in ("PLAYOFFS", "COMPLETE") and (bw or bl):
+            if bw:
+                if bw["place"]:
+                    standing = {"code": "CHAMPION" if bw["place"] == 1 else "FINISHED", "text": "🏆 Champion" if bw["place"] == 1 else f"Finished {bw['place']}{'nd' if bw['place'] == 2 else 'rd' if bw['place'] == 3 else 'th'}"}
+                elif bw["alive"]:
+                    standing = {"code": "ALIVE", "text": f"Alive — {bw['round_name']}"}
+                else:
+                    standing = {"code": "ELIMINATED", "text": f"Eliminated in round {bw['eliminated_round']}"}
+            else:
+                standing = {"code": "CONSOLATION", "text": "Consolation bracket"}
+        elif phase in ("PLAYOFFS", "COMPLETE"):
+            standing = {"code": "MISSED", "text": "Missed the playoffs"}
+        elif seed <= spots:
+            cushion = wins - wins_of(spots) if spots < len(standings) else None
+            standing = {"code": "IN", "text": f"Seed {seed}{' · bye' if seed <= byes else ''}" + (f" · +{cushion:g} on first out" if cushion is not None else ""),
+                        "seed": seed, "bye": seed <= byes, "cushion": cushion}
+        else:
+            gb = wins_of(spots - 1) - wins
+            standing = {"code": "OUT", "text": f"#{seed} · {gb:g} game{'s' if gb != 1 else ''} back" if gb > 0 else f"#{seed} · tied, out on points", "games_back": gb}
+
+        reg_first, reg_last = dates(reg_end)
+        po_first, _ = dates(pws)
+        rows.append({
+            "league_id": lg["league_id"], "league": lg["name"], "team": _team_name(my, league_users, user.get("display_name", "")),
+            "record": record, "phase": phase, "regular_season_end": reg_end, "regular_season_end_date": reg_last,
+            "playoff_start": pws, "playoff_start_date": po_first, "championship_week": final_week,
+            "playoff_teams": spots, "byes": byes, "two_week_final": rtype == 1, "two_week_rounds": rtype == 2,
+            "weeks_to_playoffs": max(pws - current_week, 0), "standing": standing,
+        })
+    rows.sort(key=lambda r: (r["phase"] == "COMPLETE", r["playoff_start"], r["league"].lower()))
+    groups = []
+    for r in rows:
+        k = ("COMPLETE", 99) if r["phase"] == "COMPLETE" else (None, r["playoff_start"])
+        if not groups or groups[-1]["key"] != k:
+            groups.append({"key": k, "complete": r["phase"] == "COMPLETE", "playoff_start": r["playoff_start"],
+                           "regular_season_end": r["regular_season_end"], "regular_season_end_date": r["regular_season_end_date"],
+                           "playoff_start_date": r["playoff_start_date"], "weeks_to_playoffs": r["weeks_to_playoffs"], "leagues": []})
+        groups[-1]["leagues"].append(r)
+    for g in groups:
+        g.pop("key")
+    codes = [r["standing"]["code"] for r in rows]
+    return {
+        "current_week": current_week, "season": season,
+        "summary": {"leagues": len(rows), "in": codes.count("IN"), "out": codes.count("OUT"),
+                    "alive": codes.count("ALIVE"), "eliminated": codes.count("ELIMINATED") + codes.count("MISSED"),
+                    "champion": codes.count("CHAMPION"), "byes": sum(1 for r in rows if r["standing"].get("bye")),
+                    "next_start": next((g["playoff_start"] for g in groups if not g["complete"] and g["weeks_to_playoffs"] > 0), None)},
+        "groups": groups,
+        "note": "Seeds before the playoffs use wins then points for (your league's tiebreakers may differ). "
+                "Championship week accounts for two-week finals or rounds when the league uses them.",
+    }

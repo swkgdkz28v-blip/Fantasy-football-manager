@@ -239,11 +239,55 @@ function TradeDeadlinesView({ data }) {
     data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
 }
 
+// ── PLAYOFF CALENDAR VIEW ─────────────────────────────────────────────────────
+function PlayoffCalendarView({ data }) {
+  if (!data?.groups?.length) return e(Alert, { type: 'info' }, e('p', null, 'No leagues found.'));
+  const sm = data.summary || {};
+  const fmt = d => d ? new Date(d + 'T12:00:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) : null;
+  const S = { IN: ['var(--accent)', '✅'], OUT: ['var(--accent3)', '⛔'], ALIVE: ['var(--accent)', '🟢'], CHAMPION: ['var(--accent)', '🏆'],
+              FINISHED: ['var(--accent4)', '🏅'], ELIMINATED: ['var(--accent2)', '❌'], MISSED: ['var(--accent2)', '❌'], CONSOLATION: ['var(--text3)', '🥉'] };
+  const row = r => {
+    const [c, icon] = S[r.standing.code] || ['var(--text2)', ''];
+    return e('div', { key: r.league_id, style: { padding: '9px 0', borderBottom: '1px solid var(--border)' } },
+      e('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+        e('div', { style: { flex: 1, minWidth: 0 } },
+          e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
+          e('div', { style: { fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+            `${r.team} · ${r.record} · ${r.playoff_teams} make it${r.byes ? `, ${r.byes} bye${r.byes > 1 ? 's' : ''}` : ''}`)),
+        e('div', { style: { textAlign: 'right', maxWidth: '48%' } },
+          e('div', { style: { fontSize: 13, fontWeight: 800, color: c } }, `${icon} ${r.standing.text}`))),
+      e('div', { style: { fontSize: 11, color: 'var(--text2)', marginTop: 3 } },
+        `Final week ${r.championship_week}${r.two_week_final ? ' (2-week final)' : r.two_week_rounds ? ' (2-week rounds)' : ''}`));
+  };
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.in ?? 0, label: 'In A Spot Now', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.out ?? 0, label: 'Out Right Now', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.alive ?? 0, label: 'Alive In Playoffs', color: 'var(--accent4)' }),
+      e(StatTile, { value: sm.champion ?? 0, label: 'Titles', color: 'var(--accent)' })),
+    e('div', { style: { fontSize: 12, color: 'var(--text3)', marginBottom: 12 } }, `NFL week ${data.current_week}. Grouped by when each league's playoffs start.`),
+    data.groups.map((g, i) => g.complete
+      ? e('details', { key: 'done', className: 'card', style: { borderLeft: '3px solid var(--text3)' } },
+          e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--text3)' } }, `🏁 Season complete (${g.leagues.length})`),
+          g.leagues.map(row))
+      : e(Card, { key: i, borderColor: g.weeks_to_playoffs === 0 ? 'var(--accent)' : g.weeks_to_playoffs <= 1 ? 'var(--accent3)' : 'var(--accent4)' },
+          e('div', { className: 'card-header', style: { marginBottom: 6 } },
+            e('div', null,
+              e('div', { className: 'card-title' }, `Playoffs start week ${g.playoff_start}${g.playoff_start_date ? ` · ${fmt(g.playoff_start_date)}` : ''}`),
+              e('div', { className: 'card-subtitle' }, `Regular season ends week ${g.regular_season_end}${g.regular_season_end_date ? ` · ${fmt(g.regular_season_end_date)}` : ''}`)),
+            e('div', { style: { fontSize: 13, fontWeight: 800, whiteSpace: 'nowrap', color: g.weeks_to_playoffs === 0 ? 'var(--accent)' : g.weeks_to_playoffs <= 1 ? 'var(--accent3)' : 'var(--accent4)' } },
+              g.weeks_to_playoffs === 0 ? 'UNDER WAY' : g.weeks_to_playoffs === 1 ? 'FINAL WEEK' : `${g.weeks_to_playoffs} wks away`)),
+          g.leagues.map(row))),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
+}
+
 // ── LEAGUES TAB LIST ─────────────────────────────────────────────────────
 FF.tab({ id: 'leagues', label: 'Leagues', icon: '📋', groups: [
   { label: 'Your leagues', features: [
     { id: 'league-sheet', title: 'League Sheet', sub: 'Lineup format, record, projection, needs', icon: '📋', tint: 'blue',
       endpoint: '/analysis/league-sheet', view: LeagueSheetView, badge: d => d.summary && cnt(d.summary.critical, 'red') },
+    { id: 'playoff-calendar', title: 'Playoff Calendar', sub: 'Season end, playoff start, and where you stand', icon: '🗓️', tint: 'green',
+      endpoint: '/analysis/playoff-calendar', view: PlayoffCalendarView },
     { id: 'trade-deadlines', title: 'Trade Deadlines', sub: 'Every league’s deadline, soonest first', icon: '⏰', tint: 'red',
       endpoint: '/analysis/trade-deadlines', view: TradeDeadlinesView, badge: d => d.summary && cnt(d.summary.this_week, 'red') },
     { id: 'season-records', title: 'Season Records', sub: 'Record, PF, PA and max PF', icon: '📒', tint: 'green',

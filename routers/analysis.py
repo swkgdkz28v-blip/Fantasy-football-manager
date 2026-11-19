@@ -4503,3 +4503,30 @@ async def get_playoff_calendar(req: UserRequest):
         "note": "Seeds before the playoffs use wins then points for (your league's tiebreakers may differ). "
                 "Championship week accounts for two-week finals or rounds when the league uses them.",
     }
+
+
+# ── REFRESH LEAGUES ───────────────────────────────────────────────────────────
+
+@router.post("/refresh-leagues")
+async def refresh_leagues(req: UserRequest):
+    """Drops the server's cached league list (and each league's rosters / members) for this user and fetches it
+    again from Sleeper, so newly joined or left leagues show up in every feature right away."""
+    user = await get_user(req.username)
+    if not user or not user.get("user_id"):
+        raise HTTPException(status_code=404, detail=f"Sleeper user '{req.username}' not found.")
+    st = await get_nfl_state()
+    season = st.get("season")
+    key = f"{user['user_id']}/{season}"
+    old = get_cached(leagues_cache, key) or []
+    with cache_lock():
+        leagues_cache.pop(key, None)
+        for lg in old:
+            rosters_cache.pop(lg.get("league_id"), None)
+            league_users_cache.pop(lg.get("league_id"), None)
+    leagues = await get_leagues(user["user_id"], season)
+    return {
+        "season": season, "refreshed_at": __import__("time").time(),
+        "count": len(leagues),
+        "leagues": [{"league_id": lg["league_id"], "name": lg.get("name"), "status": lg.get("status"),
+                     "teams": lg.get("total_rosters")} for lg in leagues],
+    }

@@ -740,6 +740,49 @@ function RefreshLeaguesView({ data }) {
       data.leagues.map(l => lineRow(l.league_id, l.name, [l.teams ? `${l.teams} teams` : null, l.status === 'complete' ? 'complete' : null].filter(Boolean).join(' · ')))));
 }
 
+// ── LEAGUE EXPORT VIEW ────────────────────────────────────────────────────────
+function LeagueExportView({ data }) {
+  const [copied, setCopied] = useState(false);
+  if (!data?.export) return null;
+  const x = data.export;
+  const prompt = `Below is my Sleeper fantasy football league "${data.league}" as JSON (NFL week ${data.week}). I'm "${data.team}" ("me": true in standings). ` +
+    `Scoring and lineup rules are in league_setup; other teams' rosters are condensed (field_notes explains fields). ` +
+    `Use it to answer my questions about lineups, trades, waivers and long-term strategy. My first question: `;
+  const text = prompt + '\n\n```json\n' + JSON.stringify(x) + '\n```';
+  const kb = Math.round(text.length / 1024);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); }
+    catch (_) { const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); } catch (__) {} t.remove(); }
+    setCopied(true); setTimeout(() => setCopied(false), 2500);
+  };
+  const share = async () => { try { await navigator.share({ title: `${data.league} — league export`, text }); } catch (_) {} };
+  const me = x.my_team || {}, a = me.analysis || {};
+  const counts = [
+    ['Standings', `${(x.standings || []).length} teams`],
+    ['Your roster', `${(me.roster || []).length} players`],
+    ['Other rosters', `${(x.other_teams || []).length} teams, condensed`],
+    ['Draft picks', `${Object.values(x.draft_picks_owned || {}).reduce((n, v) => n + v.length, 0)} picks`],
+    ['Transactions', `${(x.recent_transactions || []).length} recent`],
+    ['Your analysis', [a.roster_tier, a.core_age ? `age ${a.core_age}` : null, a.playoff_odds ? `${a.playoff_odds.playoff_pct}% playoffs` : null].filter(Boolean).join(' · ') || '—'],
+  ];
+  return e('div', null,
+    e(Card, null,
+      e('div', { className: 'card-title' }, data.league),
+      e('div', { className: 'card-subtitle', style: { marginBottom: 12 } }, `${data.team} · week ${data.week} · about ${kb} KB`),
+      e('div', { style: { display: 'flex', gap: 8 } },
+        e('button', { className: 'primary', style: { flex: 1 }, onClick: copy }, copied ? '✓ Copied' : '📋 Copy for Claude'),
+        typeof navigator !== 'undefined' && navigator.share && e('button', { className: 'secondary', onClick: share }, 'Share')),
+      e('div', { style: { fontSize: 12, color: 'var(--text3)', marginTop: 10, lineHeight: 1.5 } },
+        'Paste into a new Claude chat and finish the sentence at the top with your question. The JSON already includes a short intro so Claude knows what it is looking at.')),
+    e(Card, null,
+      secTitle('What’s included'),
+      counts.map(([k, v]) => lineRow(k, k, v))),
+    e('details', { className: 'card' },
+      e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700 } }, 'Preview JSON'),
+      e('pre', { style: { fontSize: 10.5, color: 'var(--text2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 420, overflow: 'auto', marginTop: 8 } },
+        JSON.stringify(x, null, 1).slice(0, 6000) + (JSON.stringify(x, null, 1).length > 6000 ? '\n… (full version is copied)' : ''))));
+}
+
 // ── DYNASTY TAB LIST ─────────────────────────────────────────────────────
 FF.tab({ id: 'dynasty', label: 'Dynasty', icon: '🏆', groups: [
   { label: 'Team strength', features: [
@@ -753,6 +796,8 @@ FF.tab({ id: 'dynasty', label: 'Dynasty', icon: '🏆', groups: [
       endpoint: '/analysis/overview', view: OverviewView },
     { id: 'deep-dive', title: 'Team Deep Dive', sub: 'Everything about one league', icon: '🔬', tint: 'purple',
       endpoint: '/analysis/team-deep-dive', view: DeepDiveView, needs: 'league' },
+    { id: 'league-export', title: 'Export League for Claude', sub: 'Copy one league as JSON to ask Claude about', icon: '🤖', tint: 'purple',
+      endpoint: '/analysis/league-export', view: LeagueExportView, needs: 'league' },
   ]},
   { label: 'Building for next year', features: [
     { id: 'age-profile', title: 'Age Profile', sub: 'Core age and players near the cliff', icon: '⏳', tint: 'orange',

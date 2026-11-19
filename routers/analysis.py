@@ -2668,8 +2668,9 @@ def _simulate_league(team_ids, strength, schedule, base_wins, base_pf, playoff_s
 
 
 @router.post("/analysis/playoff-odds")
-async def get_playoff_odds(req: UserRequest):
-    """Monte Carlo playoff odds per league using each team's actual scoring mean ± sd and the real remaining schedule."""
+async def get_playoff_odds(req: UserRequest, only_league_id: Optional[str] = None):
+    """Monte Carlo playoff odds per league using each team's actual scoring mean ± sd and the real remaining schedule.
+    only_league_id limits the run to one league (used by League Export)."""
     user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
     user_id = user["user_id"]
     week = req.week or current_week
@@ -2678,6 +2679,8 @@ async def get_playoff_odds(req: UserRequest):
 
     results = []
     for league in leagues:
+        if only_league_id and league["league_id"] != only_league_id:
+            continue
         ss = league.get("scoring_settings") or {}
         proj_map = build_proj_map(proj_array, ss)
         settings = league.get("settings", {})
@@ -4530,3 +4533,157 @@ async def refresh_leagues(req: UserRequest):
         "leagues": [{"league_id": lg["league_id"], "name": lg.get("name"), "status": lg.get("status"),
                      "teams": lg.get("total_rosters")} for lg in leagues],
     }
+
+
+# ── LEAGUE EXPORT (JSON to paste into a Claude chat) ──────────────────────────
+
+@router.post("/analysis/league-export")
+async def get_league_export(req: UserLeagueRequest):
+    """One league as structured JSON for an AI chat: setup, standings, your full roster, every other roster condensed
+    (starters + best bench), draft-pick ownership, recent transactions, and this app's analysis for the league."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+    weeks_completed = max(0, min(week - 1, current_week - 1))
+    q = (req.league_name or "").strip().lower()
+    if not q:
+        raise HTTPException(status_code=400, detail="Enter a league name to export.")
+    league = next((l for l in leagues if l["name"].strip().lower() == q), None) \
+        or next((l for l in leagues if q in l["name"].lower()), None)
+    if not league:
+        raise HTTPException(status_code=404, detail=f'No league matching "{req.league_name}".')
+    lid = league["league_id"]
+    st = league.get("settings") or {}
+    ss = league.get("scoring_settings") or {}
+    tx_weeks = [w for w in range(max(1, current_week - 3), current_week + 1)]
+
+    (rosters, league_users, traded, proj_array, weekly, schedule, byes, *tx) = await asyncio.gather(
+        get_rosters(lid), get_league_users(lid), get_traded_picks(lid), get_projections(season, week),
+        _weekly_stats_by_player(season, weeks_completed), get_schedule(season, week), bye_teams_for(season, week),
+        *[get_transactions(lid, w) for w in tx_weeks])
+    my = next((r for r in rosters if r["owner_id"] == user_id), None)
+    if not my:
+        raise HTTPException(status_code=404, detail=f"You don't have a team in {league['name']}.")
+    proj_map = build_proj_map(proj_array, ss)
+    opp = {}
+    for g in schedule or []:
+        h, a = g.get("home"), g.get("away")
+        if h and a:
+            opp[h], opp[a] = f"vs {a}", f"@ {h}"
+    tname = {r["roster_id"]: _team_name(r, league_users, f"Team {r['roster_id']}") for r in rosters}
+    slots = [x for x in (league.get("roster_positions") or []) if x not in ("BN", "IR", "TAXI")]
+
+    def player(pid, role):
+        p = players_db.get(pid) or {}
+        avg, sd, gp, _ = _season_line(weekly.get(pid), ss)
+        t = p.get("team")
+        return {k: v for k, v in {
+            "name": player_name(p) or pid, "pos": p.get("position"), "nfl_team": t or "FA", "age": p.get("age"),
+            "role": role, "injury": p.get("injury_status"),
+            "this_week": ("BYE" if t and t in byes else opp.get(t)) if t else None,
+            "proj": round(proj_map.get(pid, 0), 1), "avg": avg if gp else None, "sd": sd, "games": gp,
+        }.items() if v not in (None, "", [])}
+
+    def roster_players(r, condensed):
+        starters = [str(x) for x in (r.get("starters") or []) if x and str(x) != "0"]
+        ir = {str(x) for x in (r.get("reserve") or [])}
+        taxi = {str(x) for x in (r.get("taxi") or [])}
+        rows = []
+        for pid in starters:
+            rows.append(player(pid, "starter"))
+        bench = [str(x) for x in (r.get("players") or []) if str(x) not in starters and str(x) not in ir and str(x) not in taxi]
+        bench.sort(key=lambda pid: -proj_map.get(pid, 0))
+        for pid in (bench[:4] if condensed else bench):
+            rows.append(player(pid, "bench"))
+        if not condensed:
+            rows += [player(pid, "IR") for pid in ir] + [player(pid, "taxi") for pid in taxi]
+        else:
+            young = sorted([pid for pid in taxi | set(bench[4:]) if (players_db.get(pid) or {}).get("age") and players_db[pid]["age"] <= 24],
+                           key=lambda pid: players_db[pid]["age"])[:3]
+            rows += [player(pid, "taxi" if pid in taxi else "bench") for pid in young]
+        return rows
+
+    def rec(r):
+        x = r.get("settings") or {}
+        pf = (x.get("fpts", 0) or 0) + (x.get("fpts_decimal", 0) or 0) / 100
+        pa = (x.get("fpts_against", 0) or 0) + (x.get("fpts_against_decimal", 0) or 0) / 100
+        return x.get("wins", 0), x.get("losses", 0), x.get("ties", 0), round(pf, 1), round(pa, 1)
+    order = sorted(rosters, key=lambda r: (-(rec(r)[0] + 0.5 * rec(r)[2]), -rec(r)[3]))
+    standings = []
+    for i, r in enumerate(order, start=1):
+        w, l, t, pf, pa = rec(r)
+        standings.append({"seed": i, "team": tname[r["roster_id"]], "me": r["roster_id"] == my["roster_id"],
+                          "record": f"{w}-{l}" + (f"-{t}" if t else ""), "pf": pf, "pa": pa})
+
+    rounds = int(st.get("draft_rounds") or 4)
+    picks = {}
+    for r in rosters:
+        for pk in _owned_picks(r["roster_id"], rosters, traded, season, min(rounds, 5), seasons_ahead=2):
+            picks.setdefault(tname[r["roster_id"]], []).append(
+                f"{pk['season']} R{pk['round']}" + ("" if pk["original_roster"] == r["roster_id"] else f" (from {tname.get(pk['original_roster'])})"))
+
+    transactions = []
+    for w, txs in zip(tx_weeks, tx):
+        for t_ in txs or []:
+            if t_.get("status") != "complete":
+                continue
+            adds = {str(k): v for k, v in (t_.get("adds") or {}).items()}
+            drops = {str(k): v for k, v in (t_.get("drops") or {}).items()}
+            sides = {}
+            for pid, rid in adds.items():
+                sides.setdefault(tname.get(rid, rid), {}).setdefault("got", []).append(player_name(players_db.get(pid) or {}) or pid)
+            for pid, rid in drops.items():
+                sides.setdefault(tname.get(rid, rid), {}).setdefault("gave_or_dropped", []).append(player_name(players_db.get(pid) or {}) or pid)
+            for dp in t_.get("draft_picks") or []:
+                sides.setdefault(tname.get(dp.get("owner_id")), {}).setdefault("got", []).append(f"{dp.get('season')} R{dp.get('round')} pick")
+            transactions.append({"week": w, "type": t_.get("type"), "teams": sides})
+
+    ev = _evaluate_league(league, my, rosters, traded, players_db, proj_map, season, current_week)
+    active = [players_db[pid] for pid in (str(x) for x in (my.get("players") or []))
+              if pid in players_db and pid not in {str(x) for x in (my.get("reserve") or [])} and players_db[pid].get("team")]
+    ca = _core_age(league, my, players_db, proj_map)
+    odds = None
+    try:
+        po = await get_playoff_odds(UserRequest(username=req.username, week=week), only_league_id=lid)
+        if po["results"]:
+            o = po["results"][0]
+            odds = {"playoff_pct": o["playoff_pct"], "bye_pct": o["bye_pct"], "expected_wins": o["exp_wins"], "status": o["status"]}
+    except Exception:
+        pass
+
+    data = {
+        "exported": {"season": season, "nfl_week": week, "league": league["name"], "my_team": tname[my["roster_id"]]},
+        "league_setup": {
+            "teams": len(rosters), "format": "dynasty" if st.get("type") == 2 else "keeper" if st.get("type") == 1 else "redraft",
+            "starting_lineup": slots, "bench_slots": (league.get("roster_positions") or []).count("BN"),
+            "ir_slots": max(int(st.get("reserve_slots") or 0), (league.get("roster_positions") or []).count("IR")),
+            "taxi_slots": int(st.get("taxi_slots") or 0),
+            "scoring": {k: v for k, v in ss.items() if v},
+            "playoffs": {"teams": st.get("playoff_teams"), "start_week": st.get("playoff_week_start")},
+            "trade_deadline_week": st.get("trade_deadline") if (st.get("trade_deadline") or 99) <= 18 else "none",
+            "waivers": "FAAB" if st.get("waiver_type") == 2 else "rolling/priority",
+            "faab_budget": st.get("waiver_budget") if st.get("waiver_type") == 2 else None,
+            "rookie_draft_rounds": rounds,
+        },
+        "standings": standings,
+        "my_team": {
+            "roster": roster_players(my, condensed=False),
+            "faab_remaining": (st.get("waiver_budget") or 0) - ((my.get("settings") or {}).get("waiver_budget_used") or 0) if st.get("waiver_type") == 2 else None,
+            "analysis": {
+                "roster_tier": ev.get("roster_tier"), "roster_strength_1to5": ev.get("roster_composite"),
+                "overall_tier": ev.get("tier"), "strategy": ev.get("strategy"),
+                "position_needs": [{"pos": n["position"], "have": n["have"], "need": n["need"], "critical": n["critical"]}
+                                   for n in _roster_needs(slots, active, players_db)],
+                "core_age": ca["core_age"] if ca else None, "contention_window": ca["window"] if ca else None,
+                "playoff_odds": odds,
+            },
+        },
+        "other_teams": [{"team": tname[r["roster_id"]], "roster_condensed": roster_players(r, condensed=True)}
+                        for r in order if r["roster_id"] != my["roster_id"]],
+        "draft_picks_owned": picks,
+        "recent_transactions": transactions,
+        "field_notes": {"proj": "this week's projection, league scoring", "avg": "season points per game played, league scoring",
+                        "sd": "std dev of weekly points", "games": "games played", "this_week": "NFL opponent this week",
+                        "roster_condensed": "starters, top 4 bench by projection, up to 3 young (≤24) prospects"},
+    }
+    return {"league": league["name"], "team": tname[my["roster_id"]], "week": week, "export": data}

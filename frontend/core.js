@@ -365,8 +365,15 @@ function App() {
   useEffect(() => {
     const onPop = () => setOpen(o => ({ ...o, [tab]: null }));
     window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
-  }, [tab]);
+    // A feature (Refresh Leagues) can ask the whole app to drop its saved results and re-read the account
+    const onRefreshed = ev => {
+      const keep = (ev.detail && ev.detail.keepPrefix) || null;      // e.g. 'refresh-leagues|' keeps the refresh screen itself
+      setResults(r => Object.fromEntries(Object.entries(r).filter(([k]) => keep && k.startsWith(keep))));
+      if (username) API.post('/me', { username }).then(setMe).catch(() => {});
+    };
+    window.addEventListener('ff:leagues-refreshed', onRefreshed);
+    return () => { window.removeEventListener('popstate', onPop); window.removeEventListener('ff:leagues-refreshed', onRefreshed); };
+  }, [tab, username]);
 
   const saveUsername = async name => {
     const info = await API.post('/me', { username: name });   // throws a readable error if unknown
@@ -395,7 +402,7 @@ function App() {
     window.scrollTo(0, 0);
     if (!f.needs) {
       const k = resultKey(f, week, '');
-      if (!results[k]) run(f, '');
+      if (!results[k] || f.alwaysRun) run(f, '');
     } else if ((inputs[f.needs] || '').trim()) {
       const k = resultKey(f, week, inputs[f.needs]);
       if (!results[k]) run(f, inputs[f.needs]);

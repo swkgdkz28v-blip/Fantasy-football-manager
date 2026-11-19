@@ -705,6 +705,41 @@ function PlayoffPictureView({ data }) {
     data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 10 } }, data.note));
 }
 
+// ── REFRESH LEAGUES VIEW ──────────────────────────────────────────────────────
+function RefreshLeaguesView({ data }) {
+  const [diff, setDiff] = useState(null);
+  useEffect(() => {
+    if (!data || !data.leagues) return;
+    const k = `leagues.${(store.get('username', '') || '').toLowerCase()}.${data.season}`;
+    const prev = store.get(k, null);
+    const now = data.leagues;
+    if (prev) {
+      const before = new Set(prev.map(l => l.league_id)), after = new Set(now.map(l => l.league_id));
+      setDiff({ added: now.filter(l => !before.has(l.league_id)), removed: prev.filter(l => !after.has(l.league_id)), first: false });
+    } else setDiff({ added: [], removed: [], first: true });
+    store.set(k, now.map(l => ({ league_id: l.league_id, name: l.name })));
+    window.dispatchEvent(new CustomEvent('ff:leagues-refreshed', { detail: { keepPrefix: 'refresh-leagues|' } }));
+  }, [data]);
+  if (!data) return null;
+  const at = new Date((data.refreshed_at || Date.now() / 1000) * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return e('div', null,
+    e(Alert, { type: 'success', title: `✅ ${data.count} leagues loaded` },
+      e('p', null, `Fresh from Sleeper at ${at}. Every feature now uses this list — saved results were cleared so they re-run with it.`)),
+    diff && !diff.first && (diff.added.length || diff.removed.length
+      ? e(Card, null,
+          diff.added.length > 0 && e('div', { style: { marginBottom: 8 } },
+            secTitle(`➕ New since last refresh (${diff.added.length})`, 'var(--accent)'),
+            diff.added.map(l => lineRow(l.league_id, l.name, l.teams ? `${l.teams} teams` : '', 'var(--accent)'))),
+          diff.removed.length > 0 && e('div', null,
+            secTitle(`➖ Gone since last refresh (${diff.removed.length})`, 'var(--accent2)'),
+            diff.removed.map(l => lineRow(l.league_id, l.name, 'left', 'var(--accent2)'))))
+      : e('div', { style: { fontSize: 13, color: 'var(--text2)', marginBottom: 12 } }, 'No leagues added or removed since your last refresh.')),
+    diff && diff.first && e('div', { style: { fontSize: 13, color: 'var(--text2)', marginBottom: 12 } }, 'First refresh on this device — next time you’ll see which leagues were added or removed.'),
+    e('details', { className: 'card' },
+      e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700 } }, `All ${data.count} leagues`),
+      data.leagues.map(l => lineRow(l.league_id, l.name, [l.teams ? `${l.teams} teams` : null, l.status === 'complete' ? 'complete' : null].filter(Boolean).join(' · ')))));
+}
+
 // ── DYNASTY TAB LIST ─────────────────────────────────────────────────────
 FF.tab({ id: 'dynasty', label: 'Dynasty', icon: '🏆', groups: [
   { label: 'Team strength', features: [
@@ -726,6 +761,10 @@ FF.tab({ id: 'dynasty', label: 'Dynasty', icon: '🏆', groups: [
       endpoint: '/analysis/rookie-board', view: RookieBoardView },
     { id: 'trade-finder', title: 'Trade Finder', sub: 'Two offers for a player, every league', icon: '🤝', tint: 'blue',
       endpoint: '/analysis/trade-finder', view: TradeFinderView, needs: 'player' },
+  ]},
+  { label: 'Account', features: [
+    { id: 'refresh-leagues', title: 'Refresh My Leagues', sub: 'Pick up leagues you just joined or left', icon: '🔄', tint: 'blue',
+      endpoint: '/refresh-leagues', view: RefreshLeaguesView, alwaysRun: true, badge: d => ({ n: d.count, color: 'blue' }) },
   ]},
   { label: 'Drafts', features: [
     { id: 'draft-picks', title: 'All Draft Picks', sub: 'Picks you own by league', icon: '📋', tint: 'blue',

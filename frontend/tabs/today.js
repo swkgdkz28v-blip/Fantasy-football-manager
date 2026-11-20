@@ -71,7 +71,7 @@ function ThereIsAChanceView({ data }) {
   const chip = (p, color) => e('div', { key: p.id, style: { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 8px', background: 'var(--bg)', border: `1px solid ${color}`, borderRadius: 6 } },
     e(PosBadge, { pos: p.position }), e('span', { style: { fontSize: 11 } }, p.name),
     p.state === 'live'
-      ? e('span', { style: { fontSize: 10, color: 'var(--text3)' } }, `${p.actual} + ${p.remaining_proj} (${p.progress}% done)`)
+      ? e('span', { style: { fontSize: 10, color: 'var(--text3)' } }, `${p.actual} + ${p.remaining_proj}${p.progress != null ? ` (${p.progress}% done)` : ''}`)
       : e('span', { style: { fontSize: 11, fontWeight: 700, color } }, p.proj_pts));
   const group = (title, pre, live, color) => (pre.length + live.length > 0) && e('div', { style: { marginBottom: 8 } },
     e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color, marginBottom: 5 } }, `${title} · ${live.length ? `${live.length} in progress, ` : ''}${pre.length} to play`),
@@ -136,7 +136,7 @@ function HailMaryView({ data }) {
     e(PosBadge, { pos: p.position }),
     e('div', { style: { flex: 1, minWidth: 0 } },
       e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name),
-      e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, p.state === 'live' ? `${p.team} · 🔴 ${p.actual} so far · ${p.progress}% done` : `${p.team} · yet to play`)),
+      e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, p.state === 'live' ? `${p.team} · 🔴 ${p.actual} so far${p.progress != null ? ` · ${p.progress}% done` : ''}` : `${p.team} · yet to play`)),
     e('div', { style: { textAlign: 'right', minWidth: 64 } },
       e('div', { style: { fontSize: 15, fontWeight: 800, color } }, p.needs != null ? p.needs : '—'),
       e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${needLabel} · proj ${p.rem_proj}`)));

@@ -467,21 +467,25 @@ async def get_week_record(req: WeekRequest):
     have_schedule = bool(team_status)
     teams_played = {(players_db.get(pid) or {}).get("team") for pid, st in stats_map.items() if (st.get("gp") or 0) >= 1}
 
-    def game_state(pid, p):
+    def game_state(pid, p, actual):
+        """'final' | 'live' | 'pre' for one starter. Uses the NFL schedule first, then player-level evidence so a
+        game the schedule still lists as pre-game but which already has points/stats counts as in progress."""
         if week_completed:
             return "final"
-        st = team_status.get(p.get("team"))
+        team = p.get("team")
+        st = team_status.get(team)
+        played = (stats_map.get(pid, {}).get("gp") or 0) >= 1
+        started = played or actual != 0 or team in teams_played
         if st in ("complete", "final", "post_game"):
             return "final"
         if st in ("in_game", "in_progress", "live", "halftime"):
             return "live"
-        if st in ("pre_game", "scheduled"):
-            return "pre"
-        if (stats_map.get(pid, {}).get("gp") or 0) >= 1 or p.get("team") in teams_played:
-            return "final" if have_schedule else "live"
+        if started:
+            return "live"          # schedule lags or is missing, but the player has points/stats: in progress
         return "pre"
 
     def progress(pid, p):
+        """Share of the player's game already played (0..1), from team offensive snaps; 0.5 if unknown."""
         snaps = (stats_map.get(pid) or {}).get("tm_off_snp") or 0
         if not snaps:
             for q, qs in stats_map.items():
@@ -514,37 +518,36 @@ async def get_week_record(req: WeekRequest):
         opp_name = (opp_user or {}).get("metadata", {}).get("team_name") or (opp_user or {}).get("display_name", "Opponent")
 
         def side(m):
+            """Per starter: projection (frozen) and the value used for 'expected now':
+            final → actual points · live → actual so far + projection × share of game left · pre → projection."""
             pts_map = m.get("players_points") or {}
             proj_total = exp_total = 0.0
             pre = live = final = 0
+            rows = []
             for pid in (m.get("starters") or []):
                 pid = str(pid)
                 if not pid or pid == "0":
                     continue
                 p = players_db.get(pid) or {}
-                proj = proj_map.get(pid, 0)
+                proj = float(proj_map.get(pid, 0) or 0)
                 actual = float(pts_map.get(pid, 0) or 0)
-                proj_total += proj
-                state = game_state(pid, p)
+                state = game_state(pid, p, actual)
                 if state == "final":
-                    exp_total += actual; final += 1
+                    used, left = actual, 0.0; final += 1
                 elif state == "live":
-                    exp_total += actual + max(proj * (1 - progress(pid, p)), 0); live += 1
+                    frac = progress(pid, p)
+                    left = max(proj * (1 - frac), 0.0)
+                    used = actual + left; live += 1
                 else:
-                    exp_total += proj; pre += 1
-            # Sleeper's matchup total is authoritative for banked points once anything has scored
-            banked = float(m.get("points") or 0)
-            return {"proj": round(proj_total, 2), "exp": round(exp_total, 2), "banked": round(banked, 2),
-                    "pre": pre, "live": live, "final": final}
+                    used, left = proj, proj; pre += 1
+                proj_total += proj; exp_total += used
+                rows.append({"name": player_name(p) or pid, "position": p.get("position"), "team": p.get("team"),
+                             "state": state, "proj": round(proj, 1), "actual": round(actual, 2), "used": round(used, 1)})
+            return {"proj": round(proj_total, 2), "exp": round(exp_total, 2), "banked": round(sum(r["actual"] for r in rows), 2),
+                    "pre": pre, "live": live, "final": final, "players": rows}
 
         me, opp = side(my_matchup), side(opp_matchup)
-        # expected total uses Sleeper's banked points + remaining share so it matches the app's score
-        def exp_with_banked(sd, m):
-            if week_completed:
-                return round(float(m.get("points") or 0), 2)
-            remaining = sd["exp"] - sum(float(v or 0) for k, v in (m.get("players_points") or {}).items() if str(k) in {str(x) for x in (m.get("starters") or [])})
-            return round(sd["banked"] + max(remaining, 0), 2)
-        my_exp, opp_exp = exp_with_banked(me, my_matchup), exp_with_banked(opp, opp_matchup)
+        my_exp, opp_exp = me["exp"], opp["exp"]
 
         proj_win = me["proj"] > opp["proj"]
         proj_diff = me["proj"] - opp["proj"]
@@ -571,7 +574,9 @@ async def get_week_record(req: WeekRequest):
             "league": league["name"], "team": my_team_name, "opp_name": opp_name,
             "my_proj": me["proj"], "opp_proj": opp["proj"], "proj_win": proj_win, "win_prob": win_prob,
             "my_exp": my_exp, "opp_exp": opp_exp, "exp_win": exp_win, "exp_prob": exp_prob,
-            "flipped": proj_win != exp_win,
+            "flipped": (round(me["proj"], 1) != round(opp["proj"], 1)) and (round(my_exp, 1) != round(opp_exp, 1)) and proj_win != exp_win,
+            "my_live": me["banked"], "opp_live": opp["banked"],
+            "my_players": me["players"], "opp_players": opp["players"],
             "status": status, "my_left": me["pre"] + me["live"], "opp_left": opp["pre"] + opp["live"],
             "my_actual": my_actual, "opp_actual": opp_actual, "actual_won": actual_won, "actual_tied": actual_tied,
             "surprise": surprise,

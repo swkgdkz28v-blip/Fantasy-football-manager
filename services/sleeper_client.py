@@ -196,6 +196,40 @@ async def get_schedule(season: str, week: int) -> list:
         set_cached(schedule_cache, key, cached)
     return [g for g in cached if str(g.get("week")) == str(week)]
 
+# ── LIVE GAME CLOCK (ESPN public scoreboard) ───────────────────────────────────
+
+ESPN_TO_SLEEPER = {"WSH": "WAS", "JAC": "JAX", "LA": "LAR"}
+
+async def get_game_clock() -> dict:
+    """{team: {'state': 'pre'|'in'|'post', 'played': 0..1}} for today's NFL games, from ESPN's public scoreboard.
+    'played' = share of regulation elapsed (period + clock). Empty dict if ESPN can't be reached."""
+    cached = get_cached(clock_cache, "now")
+    if cached is not None:
+        return cached
+    out = {}
+    try:
+        data = await _get("https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard")
+        for ev in data.get("events", []) or []:
+            comp = (ev.get("competitions") or [{}])[0]
+            stt = comp.get("status") or ev.get("status") or {}
+            state = ((stt.get("type") or {}).get("state") or "").lower()
+            period = int(stt.get("period") or 0)
+            clock = float(stt.get("clock") or 0)            # seconds left in the period
+            if state == "post":
+                played = 1.0
+            elif state == "in" and period >= 1:
+                played = 0.98 if period > 4 else min(((period - 1) * 900 + max(900 - clock, 0)) / 3600.0, 0.99)
+            else:
+                played = 0.0
+            for c in comp.get("competitors") or []:
+                ab = ((c.get("team") or {}).get("abbreviation") or "").upper()
+                if ab:
+                    out[ESPN_TO_SLEEPER.get(ab, ab)] = {"state": state, "played": round(played, 3),
+                                                        "period": period, "clock": stt.get("displayClock")}
+    except Exception:
+        out = {}
+    return set_cached(clock_cache, "now", out)
+
 # ── TRENDING ──────────────────────────────────────────────────────────────────
 
 async def get_trending(kind: str = "add", hours: int = 24, limit: int = 50) -> list:

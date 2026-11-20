@@ -1,4 +1,4 @@
-/* Fantasy Manager — tabs/today.js (v10.33)
+/* Fantasy Manager — tabs/today.js
    The Today tab: its result screens and the list that opens them. Needs core.js loaded first. */
 
 // ── WEEKLY DIGEST VIEW ────────────────────────────────────────────────────────
@@ -285,6 +285,7 @@ function WeekAnalysisView({ data }) {
 }
 
 function WeekRecordView({ data }) {
+  const [open, setOpen] = useState(null);
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No matchup data found.'));
   const sm = data.summary || {};
   const live = data.results.filter(r => r.status === 'LIVE');
@@ -292,21 +293,34 @@ function WeekRecordView({ data }) {
   const pregame = data.results.filter(r => r.status === 'PREGAME');
   const flipped = data.results.filter(r => r.flipped);
   const col = w => w ? 'var(--accent)' : 'var(--accent2)';
-  const row = r => e('div', { key: r.league, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${col(r.exp_win)}`, borderRadius: 8, marginBottom: 6 } },
-    e('div', { style: { flex: 1, minWidth: 0 } },
-      e('div', { style: { fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
-      e('div', { style: { fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `${r.team ? r.team + ' · ' : ''}vs ${r.opp_name}`)),
-    e('div', { style: { textAlign: 'center', minWidth: 78 } },
-      e('div', { style: { fontSize: 11, color: col(r.proj_win) } }, `${r.my_proj.toFixed(1)}–${r.opp_proj.toFixed(1)}`),
-      e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, `proj ${r.win_prob}%`)),
-    e('div', { style: { textAlign: 'center', minWidth: 78 } },
-      e('div', { style: { fontSize: 12, fontWeight: 700, color: col(r.exp_win) } }, `${r.my_exp.toFixed(1)}–${r.opp_exp.toFixed(1)}`),
-      e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, r.status === 'FINAL' ? 'final' : r.status === 'LIVE' ? `exp ${r.exp_prob}% · ${r.my_left}/${r.opp_left} left` : `exp ${r.exp_prob}%`)),
-    e('div', { style: { textAlign: 'right', minWidth: 44 } },
-      e('div', { style: { fontWeight: 800, fontSize: 11, color: col(r.exp_win) } }, r.status === 'FINAL' ? (r.actual_tied ? 'TIE' : r.actual_won ? 'WIN' : 'LOSS') : (r.exp_win ? '▲ WIN' : '▼ LOSS')),
-      r.flipped && e('div', { style: { fontSize: 9, color: r.exp_win ? 'var(--accent)' : 'var(--accent2)', fontWeight: 700 } }, r.exp_win ? 'flipped up' : 'flipped down'),
-      r.surprise && e('div', { style: { fontSize: 9, color: 'var(--accent3)' } }, r.surprise === 'upset_win' ? '🎉 upset' : '😤 upset'))
-  );
+  const STATE = { final: ['✅', 'final', 'var(--text2)'], live: ['🔴', 'live', 'var(--accent4)'], pre: ['⏳', 'to play', 'var(--text3)'] };
+  const sideList = (title, players, total) => e('div', { style: { flex: 1, minWidth: 0 } },
+    e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 4 } }, `${title} · ${total.toFixed(1)}`),
+    (players || []).map((p, i) => {
+      const [icon, label, c] = STATE[p.state] || STATE.pre;
+      return e('div', { key: i, style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, padding: '4px 0', borderBottom: '1px solid var(--border)' } },
+        e('span', { style: { width: 16 } }, icon),
+        e('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name),
+        e('span', { style: { color: c, whiteSpace: 'nowrap', textAlign: 'right' } },
+          p.state === 'final' ? `${p.actual.toFixed(1)}` : p.state === 'live' ? `${p.actual.toFixed(1)} → ${p.used}` : `${p.proj}`));
+    }));
+  const row = r => e('div', { key: r.league, style: { background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${col(r.exp_win)}`, borderRadius: 8, marginBottom: 6 } },
+    e('div', { onClick: () => setOpen(open === r.league ? null : r.league), style: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', cursor: 'pointer' } },
+      e('div', { style: { flex: 1, minWidth: 0 } },
+        e('div', { style: { fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
+        e('div', { style: { fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `${r.team ? r.team + ' · ' : ''}vs ${r.opp_name}`)),
+      e('div', { style: { textAlign: 'center', minWidth: 78 } },
+        e('div', { style: { fontSize: 11, color: col(r.proj_win) } }, `${r.my_proj.toFixed(1)}–${r.opp_proj.toFixed(1)}`),
+        e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, `proj ${r.win_prob}%`)),
+      e('div', { style: { textAlign: 'center', minWidth: 78 } },
+        e('div', { style: { fontSize: 12, fontWeight: 700, color: col(r.exp_win) } }, `${r.my_exp.toFixed(1)}–${r.opp_exp.toFixed(1)}`),
+        e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, r.status === 'FINAL' ? 'final' : r.status === 'LIVE' ? `exp ${r.exp_prob}% · ${r.my_left}/${r.opp_left} left` : `exp ${r.exp_prob}%`)),
+      e('div', { style: { textAlign: 'right', minWidth: 44 } },
+        e('div', { style: { fontWeight: 800, fontSize: 11, color: col(r.exp_win) } }, r.status === 'FINAL' ? (r.actual_tied ? 'TIE' : r.actual_won ? 'WIN' : 'LOSS') : (r.exp_win ? '▲ WIN' : '▼ LOSS')),
+        r.flipped && e('div', { style: { fontSize: 9, color: r.exp_win ? 'var(--accent)' : 'var(--accent2)', fontWeight: 700 } }, r.exp_win ? 'flipped up' : 'flipped down'),
+        r.surprise && e('div', { style: { fontSize: 9, color: 'var(--accent3)' } }, r.surprise === 'upset_win' ? '🎉 upset' : '😤 upset'))),
+    open === r.league && r.my_players && e('div', { style: { display: 'flex', gap: 12, padding: '4px 12px 10px' } },
+      sideList('You', r.my_players, r.my_exp), sideList(r.opp_name, r.opp_players, r.opp_exp)));
   const section = (title, rows, color) => rows.length > 0 && e('div', { style: { marginBottom: 12 } },
     e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color, marginBottom: 6 } }, `${title} (${rows.length})`), rows.map(row));
   return e('div', null,
@@ -317,8 +331,8 @@ function WeekRecordView({ data }) {
       e(StatTile, { value: `+${sm.flipped_up ?? 0} / −${sm.flipped_down ?? 0}`, label: 'Flipped vs Proj', color: 'var(--text2)' })
     ),
     data.have_schedule === false && e(Alert, { type: 'warning' }, e('p', null, 'Live game status unavailable — in-progress players are estimated at 50%.')),
-    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 12 } },
-      'Projected = pre-game projections (frozen). Expected = actual points for finished players, banked + remaining share for in-progress, projection for players yet to play.'),
+    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 12, lineHeight: 1.5 } },
+      'Projected = pre-game projections (frozen). Expected now: ✅ game over → actual points · 🔴 in progress → points so far + projection for the part of the game left · ⏳ not started → projection. Tap a league to see every player.'),
     section('🔄 Flipped vs projection', flipped, 'var(--accent3)'),
     section('🔴 In progress', live.filter(r => !r.flipped), 'var(--accent4)'),
     section('⏳ Pregame', pregame.filter(r => !r.flipped), 'var(--text3)'),

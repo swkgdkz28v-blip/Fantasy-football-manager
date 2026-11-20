@@ -444,6 +444,10 @@ async def get_week_analysis(req: WeekRequest):
 
 # ── WEEK RECORD ───────────────────────────────────────────────────────────────
 
+async def _none():
+    return {}
+
+
 @router.post("/analysis/week-record")
 async def get_week_record(req: WeekRequest):
     """Projected record (pre-game projections, frozen) plus a live 'expected' record where players who
@@ -455,8 +459,9 @@ async def get_week_record(req: WeekRequest):
     week_completed = week < current_week
     FULL_GAME_SNAPS = 64.0
 
-    proj_array, stats_array, schedule = await asyncio.gather(
-        get_projections(season, week), get_stats(season, week), get_schedule(season, week)
+    proj_array, stats_array, schedule, clock = await asyncio.gather(
+        get_projections(season, week), get_stats(season, week), get_schedule(season, week),
+        get_game_clock() if week >= current_week else _none()
     )
     stats_map = build_stats_map(stats_array)
     team_status = {}
@@ -473,6 +478,11 @@ async def get_week_record(req: WeekRequest):
         if week_completed:
             return "final"
         team = p.get("team")
+        c = (clock or {}).get(team)
+        if c and c.get("state") == "post":
+            return "final"
+        if c and c.get("state") == "in":
+            return "live"
         st = team_status.get(team)
         played = (stats_map.get(pid, {}).get("gp") or 0) >= 1
         started = played or actual != 0 or team in teams_played
@@ -485,13 +495,17 @@ async def get_week_record(req: WeekRequest):
         return "pre"
 
     def progress(pid, p):
-        """Share of the player's game already played (0..1), from team offensive snaps; 0.5 if unknown."""
+        """Share of the player's game already played (0..1): the live game clock when available,
+        otherwise team offensive snaps; None if neither is known."""
+        c = (clock or {}).get(p.get("team"))
+        if c and c.get("state") == "in":
+            return c["played"]
         snaps = (stats_map.get(pid) or {}).get("tm_off_snp") or 0
         if not snaps:
             for q, qs in stats_map.items():
                 if (players_db.get(q) or {}).get("team") == p.get("team") and (qs.get("tm_off_snp") or 0) > 0:
                     snaps = qs["tm_off_snp"]; break
-        return min(max(snaps / FULL_GAME_SNAPS, 0.05), 0.97) if snaps else 0.5
+        return min(max(snaps / FULL_GAME_SNAPS, 0.05), 0.97) if snaps else None
 
     results = []
     for league in leagues:
@@ -536,7 +550,12 @@ async def get_week_record(req: WeekRequest):
                     used, left = actual, 0.0; final += 1
                 elif state == "live":
                     frac = progress(pid, p)
-                    left = max(proj * (1 - frac), 0.0)
+                    if frac is None:
+                        # game clock unknown: assume he finishes near his projection, never above it by more than
+                        # half of it — keeps a player who has already beaten his projection from being inflated
+                        left = min(max(proj - actual, 0.0), proj * 0.5)
+                    else:
+                        left = max(proj * (1 - frac), 0.0)
                     used = actual + left; live += 1
                 else:
                     used, left = proj, proj; pre += 1
@@ -617,6 +636,7 @@ async def get_theres_a_chance(req: UserRequest):
         get_projections(season, week), get_stats(season, week), get_schedule(season, week),
         _weekly_stats_by_player(season, weeks_completed),
     )
+    chance_clock = await get_game_clock() if week >= current_week else {}
     stats_map = build_stats_map(stats_array)
 
     team_status = {}
@@ -640,7 +660,10 @@ async def get_theres_a_chance(req: UserRequest):
         return "pre"
 
     def game_progress(pid, p):
-        """0..1 share of a live game already played, from team offensive snaps (0.5 if unknown)."""
+        """0..1 share of a live game already played: live game clock, else team offensive snaps (0.5 if unknown)."""
+        c = (chance_clock or {}).get(p.get("team"))
+        if c and c.get("state") == "in":
+            return c["played"]
         st = stats_map.get(pid) or {}
         snaps = st.get("tm_off_snp") or st.get("tm_def_snp") or 0
         if not snaps:
@@ -648,7 +671,7 @@ async def get_theres_a_chance(req: UserRequest):
             for q, qs in stats_map.items():
                 if (players_db.get(q) or {}).get("team") == p.get("team") and (qs.get("tm_off_snp") or 0) > 0:
                     snaps = qs["tm_off_snp"]; break
-        return min(max(snaps / FULL_GAME_SNAPS, 0.05), 0.97) if snaps else 0.5
+        return min(max(snaps / FULL_GAME_SNAPS, 0.05), 0.97) if snaps else None
 
     results, skipped, finished = [], [], []
     for league in leagues:
@@ -699,9 +722,11 @@ async def get_theres_a_chance(req: UserRequest):
                     exp_rem += proj; var += sd ** 2; pre.append(row)
                 else:
                     frac = game_progress(pid, p)
-                    rem = max(proj * (1 - frac), 0.0)
-                    banked += actual; exp_rem += rem; var += (sd * (1 - frac) ** 0.5) ** 2
-                    row.update({"progress": round(frac * 100), "remaining_proj": round(rem, 1)})
+                    # clock unknown: assume he finishes near his projection (never adds more than half of it)
+                    rem = min(max(proj - actual, 0.0), proj * 0.5) if frac is None else max(proj * (1 - frac), 0.0)
+                    left_share = 0.5 if frac is None else (1 - frac)
+                    banked += actual; exp_rem += rem; var += (sd * left_share ** 0.5) ** 2
+                    row.update({"progress": round(frac * 100) if frac is not None else None, "remaining_proj": round(rem, 1)})
                     live.append(row)
             return {"banked": round(banked, 2), "exp_remaining": round(exp_rem, 1), "expected": round(banked + exp_rem, 1),
                     "sd": round(var ** 0.5, 1), "pre": pre, "live": live, "done": done}

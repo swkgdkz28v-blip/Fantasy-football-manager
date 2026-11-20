@@ -31,6 +31,9 @@ matchups_cache = TTLCache(maxsize=200, ttl=120)
 # Trending adds/drops — 10 minutes
 trending_cache = TTLCache(maxsize=10, ttl=600)
 
+# Live game clock (ESPN) — 1 minute
+clock_cache = TTLCache(maxsize=2, ttl=60)
+
 # NFL schedule with live game status — 2 minutes
 schedule_cache = TTLCache(maxsize=4, ttl=120)
 

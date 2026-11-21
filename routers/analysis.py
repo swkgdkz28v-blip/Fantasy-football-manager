@@ -150,7 +150,7 @@ async def get_injured_starters(req: UserRequest):
             if not p:
                 continue
             status = (p.get("injury_status") or "").lower()
-            if status in ["out", "ir", "pup", "sus", "na"]:
+            if status in ["out", "ir", "pup", "sus", "na", "doubtful"]:
                 injured.append({"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team"), "status": p.get("injury_status")})
 
         if injured:
@@ -185,7 +185,7 @@ async def get_questionable_starters(req: UserRequest):
             if not p:
                 continue
             status = (p.get("injury_status") or "").lower()
-            if status in ["doubtful", "questionable"]:
+            if status == "questionable":            # doubtful is reported with OUT / IR starters
                 questionable.append({"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team"), "status": p.get("injury_status")})
 
         if questionable:
@@ -2903,7 +2903,7 @@ async def get_weekly_digest(req: UserRequest):
         add(x["league"], x.get("team"), "CRITICAL", "open_slot", f"{x['open_slots']} empty starter slot{'s' if x['open_slots'] != 1 else ''}")
     for x in (data.get("injured") or {}).get("results", []):
         names = ", ".join(f"{p['name']} ({p['status']})" for p in x["injured"])
-        add(x["league"], x.get("team"), "CRITICAL", "injured", f"{len(x['injured'])} OUT/IR starter{'s' if len(x['injured']) != 1 else ''}", names)
+        add(x["league"], x.get("team"), "CRITICAL", "injured", f"{len(x['injured'])} OUT/IR/Doubtful starter{'s' if len(x['injured']) != 1 else ''}", names)
     for x in (data.get("bye") or {}).get("results", []):
         names = ", ".join(p["name"] for p in x["on_bye"])
         add(x["league"], x.get("team"), "CRITICAL", "bye", f"{len(x['on_bye'])} starter{'s' if len(x['on_bye']) != 1 else ''} on bye", names)
@@ -4717,3 +4717,58 @@ async def get_league_export(req: UserLeagueRequest):
                         "roster_condensed": "starters, top 4 bench by projection, up to 3 young (≤24) prospects"},
     }
     return {"league": league["name"], "team": tname[my["roster_id"]], "week": week, "export": data}
+
+
+# ── MY PLAYERS (every player you own: starting vs bench) ──────────────────────
+
+@router.post("/analysis/my-players")
+async def get_my_players(req: UserRequest):
+    """Every player the user owns across all leagues, with how many lineups he's starting in this week
+    vs sitting on the bench (plus IR and taxi), and the league-by-league detail."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_matchups(lg["league_id"], week)) for lg in leagues])
+    agg, n_leagues = {}, 0
+    for lg, (rosters, matchups) in zip(leagues, fetched):
+        my = next((r for r in rosters if r["owner_id"] == user_id), None)
+        if not my:
+            continue
+        n_leagues += 1
+        slots = [x for x in (lg.get("roster_positions") or []) if x not in ("BN", "IR", "TAXI")]
+        my_m = next((m for m in matchups if m["roster_id"] == my["roster_id"]), None)
+        starters = [str(x) for x in ((my_m or my).get("starters") or [])]
+        ir = {str(x) for x in (my.get("reserve") or [])}
+        taxi = {str(x) for x in (my.get("taxi") or [])}
+        for pid in (str(x) for x in (my.get("players") or [])):
+            p = players_db.get(pid)
+            if not p:
+                continue
+            if pid in starters:
+                role = "start"; i = starters.index(pid); slot = slots[i] if i < len(slots) else None
+            elif pid in ir:
+                role, slot = "ir", None
+            elif pid in taxi:
+                role, slot = "taxi", None
+            else:
+                role, slot = "bench", None
+            a = agg.setdefault(pid, {"id": pid, "name": player_name(p), "position": p.get("position"), "team": p.get("team") or "FA",
+                                     "age": p.get("age"), "injury_status": p.get("injury_status"),
+                                     "owned": 0, "start": 0, "bench": 0, "ir": 0, "taxi": 0, "leagues": []})
+            a["owned"] += 1; a[role] += 1
+            a["leagues"].append({"league": lg["name"], "role": role, "slot": slot})
+    players = list(agg.values())
+    for a in players:
+        a["leagues"].sort(key=lambda x: (["start", "bench", "taxi", "ir"].index(x["role"]), x["league"].lower()))
+        a["start_pct"] = round(100 * a["start"] / max(a["start"] + a["bench"], 1))
+    players.sort(key=lambda a: (-a["owned"], -a["start"], a["name"]))
+    return {
+        "week": week,
+        "summary": {"leagues": n_leagues, "players": len(players),
+                    "rostered_spots": sum(a["owned"] for a in players),
+                    "starting_spots": sum(a["start"] for a in players), "bench_spots": sum(a["bench"] for a in players),
+                    "always_start": sum(1 for a in players if a["start"] and not a["bench"]),
+                    "never_start": sum(1 for a in players if a["bench"] and not a["start"]),
+                    "split": sum(1 for a in players if a["start"] and a["bench"])},
+        "players": players,
+    }

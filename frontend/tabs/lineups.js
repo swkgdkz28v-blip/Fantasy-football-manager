@@ -345,9 +345,9 @@ FF.tab({ id: 'lineups', label: 'Lineups', icon: '⚡', groups: [
       endpoint: '/analysis/waiver-watch', view: WaiverWatchView, badge: d => d.summary && cnt(d.summary.leagues_with_pickups, 'green') },
   ]},
   { label: 'Problems to fix', features: [
-    { id: 'injured', title: 'OUT / IR Starters', sub: 'Starters who won’t play', icon: '🚨', tint: 'red',
+    { id: 'injured', title: 'OUT / IR / Doubtful', sub: 'Starters who won’t (or likely won’t) play', icon: '🚨', tint: 'red',
       endpoint: '/alerts/injured-starters', view: AlertsView, viewProps: { type: 'injured' }, badge: d => cnt((d.results || []).length, 'red') },
-    { id: 'questionable', title: 'Questionable', sub: 'Game-time decisions in your lineups', icon: '⚠️', tint: 'orange',
+    { id: 'questionable', title: 'Questionable', sub: 'Questionable starters (game-time decisions)', icon: '⚠️', tint: 'orange',
       endpoint: '/alerts/questionable-starters', view: AlertsView, viewProps: { type: 'questionable' }, badge: d => cnt((d.results || []).length, 'orange') },
     { id: 'bye', title: 'Starters on Bye', sub: 'Byes still in a lineup', icon: '📅', tint: 'red',
       endpoint: '/alerts/starters-on-bye', view: AlertsView, viewProps: { type: 'bye' }, badge: d => cnt((d.results || []).length, 'red') },

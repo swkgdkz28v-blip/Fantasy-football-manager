@@ -1,4 +1,4 @@
-/* Fantasy Manager — tabs/roster.js (v10.33)
+/* Fantasy Manager — tabs/roster.js
    The Roster tab: its result screens and the list that opens them. Needs core.js loaded first. */
 
 // ── IR-ELIGIBLE VIEW ──────────────────────────────────────────────────────────
@@ -224,6 +224,52 @@ function PlayerLookupView({ data }) {
   );
 }
 
+// ── MY PLAYERS VIEW ───────────────────────────────────────────────────────────
+function MyPlayersView({ data }) {
+  const [q, setQ] = useState('');
+  const [sort, setSort] = useState('owned');
+  const [filter, setFilter] = useState('all');
+  const [open, setOpen] = useState(null);
+  if (!data?.players?.length) return e(Alert, { type: 'info' }, e('p', null, 'No players found.'));
+  const sm = data.summary || {};
+  let rows = data.players.filter(p => !q.trim() || p.name.toLowerCase().includes(q.trim().toLowerCase()) || (p.position || '').toLowerCase() === q.trim().toLowerCase());
+  if (filter === 'split') rows = rows.filter(p => p.start && p.bench);
+  if (filter === 'never') rows = rows.filter(p => p.bench && !p.start);
+  if (filter === 'always') rows = rows.filter(p => p.start && !p.bench);
+  const cmp = { owned: (a, b) => b.owned - a.owned || b.start - a.start, start: (a, b) => b.start - a.start || b.owned - a.owned,
+                bench: (a, b) => b.bench - a.bench || b.owned - a.owned, name: (a, b) => a.name.localeCompare(b.name) };
+  rows = [...rows].sort(cmp[sort]);
+  const pill = (on, label, onClick) => e('button', { onClick, style: { flex: 1, padding: '7px 4px', fontSize: 12, fontWeight: 700, borderRadius: 8, border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--surface2)' : 'transparent', color: on ? 'var(--text)' : 'var(--text3)' } }, label);
+  const ROLE = { start: ['▲ Start', 'var(--accent)'], bench: ['▼ Bench', 'var(--accent3)'], taxi: ['🚕 Taxi', 'var(--accent4)'], ir: ['🏥 IR', 'var(--accent2)'] };
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.players ?? 0, label: `Players · ${sm.leagues} leagues`, color: 'var(--text)' }),
+      e(StatTile, { value: sm.starting_spots ?? 0, label: 'Starting Spots', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.bench_spots ?? 0, label: 'On Bench', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.split ?? 0, label: 'Start Some / Sit Some', color: 'var(--accent4)' })),
+    e('input', { className: 'field', style: { width: '100%', marginBottom: 8 }, placeholder: 'Search a player or position (e.g. WR)', value: q, onChange: ev => setQ(ev.target.value) }),
+    e('div', { style: { display: 'flex', gap: 6, marginBottom: 6 } },
+      pill(filter === 'all', 'All', () => setFilter('all')), pill(filter === 'split', 'Mixed', () => setFilter('split')),
+      pill(filter === 'always', 'Always start', () => setFilter('always')), pill(filter === 'never', 'Never start', () => setFilter('never'))),
+    e('div', { style: { display: 'flex', gap: 6, marginBottom: 12 } },
+      pill(sort === 'owned', 'Most owned', () => setSort('owned')), pill(sort === 'start', 'Most started', () => setSort('start')),
+      pill(sort === 'bench', 'Most benched', () => setSort('bench')), pill(sort === 'name', 'A–Z', () => setSort('name'))),
+    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 8 } }, `${rows.length} player${rows.length === 1 ? '' : 's'} · week ${data.week} lineups · tap for leagues`),
+    rows.map(p => e('div', { key: p.id, style: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 6 } },
+      e('div', { onClick: () => setOpen(open === p.id ? null : p.id), style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', cursor: 'pointer' } },
+        e(PosBadge, { pos: p.position }),
+        e('div', { style: { flex: 1, minWidth: 0 } },
+          e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name,
+            p.injury_status ? e('span', { style: { fontSize: 10, color: 'var(--accent2)', marginLeft: 6 } }, p.injury_status.toUpperCase()) : null),
+          e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, `${p.team}${p.age ? ` · ${p.age}` : ''} · owned ${p.owned}${p.ir ? ` · IR ${p.ir}` : ''}${p.taxi ? ` · taxi ${p.taxi}` : ''}`)),
+        e('div', { style: { textAlign: 'center', minWidth: 40 } },
+          e('div', { style: { fontSize: 16, fontWeight: 800, color: 'var(--accent)' } }, p.start), e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'start')),
+        e('div', { style: { textAlign: 'center', minWidth: 40 } },
+          e('div', { style: { fontSize: 16, fontWeight: 800, color: p.bench ? 'var(--accent3)' : 'var(--text3)' } }, p.bench), e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'bench'))),
+      open === p.id && e('div', { style: { padding: '0 12px 8px' } },
+        p.leagues.map((l, i) => lineRow(i, l.league, `${ROLE[l.role][0]}${l.slot ? ` · ${l.slot}` : ''}`, ROLE[l.role][1]))))));
+}
+
 // ── ROSTER TAB LIST ──────────────────────────────────────────────────────
 FF.tab({ id: 'roster', label: 'Roster', icon: '🧩', groups: [
   { label: 'Roster health', features: [
@@ -237,6 +283,8 @@ FF.tab({ id: 'roster', label: 'Roster', icon: '🧩', groups: [
       endpoint: '/analysis/bye-planner', view: ByePlannerView, badge: d => d.summary && cnt(d.summary.leagues_with_holes, 'red') },
   ]},
   { label: 'Across all leagues', features: [
+    { id: 'my-players', title: 'My Players', sub: 'Everyone you own: starting vs bench', icon: '👥', tint: 'green',
+      endpoint: '/analysis/my-players', view: MyPlayersView },
     { id: 'exposure', title: 'Exposure', sub: 'Players and NFL teams you rely on most', icon: '📦', tint: 'blue',
       endpoint: '/analysis/exposure', view: ExposureView },
     { id: 'player-lookup', title: 'Player Lookup', sub: 'Where you own a player, starting or benched', icon: '🔎', tint: 'purple',

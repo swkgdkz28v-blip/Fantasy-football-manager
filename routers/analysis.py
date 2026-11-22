@@ -4772,3 +4772,79 @@ async def get_my_players(req: UserRequest):
                     "split": sum(1 for a in players if a["start"] and a["bench"])},
         "players": players,
     }
+
+
+# ── RECENT TRADES (every completed trade in your leagues) ─────────────────────
+
+@router.post("/analysis/recent-trades")
+async def get_recent_trades(req: UserRequest):
+    """Every completed trade across the user's leagues for the selected week and the week before it.
+    Each trade lists what every team received (players, draft picks, FAAB). Trades the user was part of
+    are flagged so the screen can highlight them. Leagues stay in Sleeper order; your trades pinned first, then newest first."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = max(1, req.week or current_week)
+    weeks = [w for w in (week - 1, week) if w >= 1]
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"]),
+                                                    *[get_transactions(lg["league_id"], w) for w in weeks]) for lg in leagues])
+
+    def pl(pid):
+        p = players_db.get(str(pid)) or {}
+        return {"id": str(pid), "name": player_name(p) or str(pid), "position": p.get("position") or "",
+                "team": p.get("team") or "FA", "age": p.get("age")}
+
+    def rnd(n):
+        return {1: "1st", 2: "2nd", 3: "3rd"}.get(n, f"{n}th")
+
+    results, quiet, n_trades, n_mine = [], [], 0, 0
+    for order, (lg, (rosters, league_users, *txs)) in enumerate(zip(leagues, fetched)):
+        my = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        if not my:
+            continue
+        my_rid = my["roster_id"]
+        tname = {r["roster_id"]: _team_name(r, league_users, f"Team {r['roster_id']}") for r in rosters}
+        seen, trades = set(), []
+        for w, tx in zip(weeks, txs):
+            for t in tx or []:
+                if t.get("type") != "trade" or t.get("status") != "complete":
+                    continue
+                tid = t.get("transaction_id")
+                if tid in seen:
+                    continue
+                seen.add(tid)
+                rids = list(dict.fromkeys(t.get("roster_ids") or []))
+                adds, picks, faab = t.get("adds") or {}, t.get("draft_picks") or [], t.get("waiver_budget") or []
+                sides = []
+                for rid in rids:
+                    got_players = [pl(pid) for pid, to in adds.items() if to == rid]
+                    got_players.sort(key=lambda x: x["name"])
+                    got_picks = sorted([{"season": str(pk.get("season")), "round": pk.get("round"),
+                                         "label": f"{pk.get('season')} {rnd(pk.get('round') or 0)}",
+                                         "from": None if pk.get("roster_id") == rid else tname.get(pk.get("roster_id"), f"Team {pk.get('roster_id')}"),
+                                         "original_is_mine": pk.get("roster_id") == my_rid}
+                                        for pk in picks if pk.get("owner_id") == rid],
+                                       key=lambda x: (x["season"], x["round"] or 0))
+                    got_faab = sum(int(b.get("amount") or 0) for b in faab if b.get("receiver") == rid)
+                    sides.append({"roster_id": rid, "team": tname.get(rid, f"Team {rid}"), "is_me": rid == my_rid,
+                                  "players": got_players, "picks": got_picks, "faab": got_faab})
+                mine = my_rid in rids
+                sides.sort(key=lambda s: not s["is_me"])
+                trades.append({"id": tid, "week": t.get("leg") or w, "created": t.get("status_updated") or t.get("created"),
+                               "mine": mine, "teams": len(rids), "sides": sides})
+        trades.sort(key=lambda x: (not x["mine"], -(x["created"] or 0)))   # your trades pinned first
+        n_trades += len(trades)
+        n_mine += sum(1 for x in trades if x["mine"])
+        row = {"order": order, "league_id": lg["league_id"], "league": lg["name"],
+               "my_team": tname.get(my_rid, user.get("display_name", ""))}
+        if trades:
+            results.append({**row, "trades": trades, "mine": sum(1 for x in trades if x["mine"])})
+        else:
+            quiet.append(row)
+    return {
+        "username": req.username, "season": season, "week": week, "weeks": weeks,
+        "summary": {"trades": n_trades, "mine": n_mine, "leagues_with_trades": len(results),
+                    "leagues_quiet": len(quiet), "leagues": len(results) + len(quiet)},
+        "results": results, "quiet": quiet,
+        "note": f"Completed trades from week{'s' if len(weeks) > 1 else ''} {'–'.join(str(w) for w in weeks)}. "
+                "Pending or rejected offers aren't visible through Sleeper's public data.",
+    }

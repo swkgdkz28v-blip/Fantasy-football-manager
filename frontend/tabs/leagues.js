@@ -239,6 +239,68 @@ function TradeDeadlinesView({ data }) {
     data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
 }
 
+// ── RECENT TRADES VIEW ────────────────────────────────────────────────────────
+function RecentTradesView({ data }) {
+  const [q, setQ] = useState('');
+  const [mineOnly, setMineOnly] = useState(false);
+  if (!data) return null;
+  const sm = data.summary || {};
+  const ql = q.trim().toLowerCase();
+  const fmt = ms => ms ? new Date(ms).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) : '';
+  const hit = t => !ql || t.sides.some(s => s.team.toLowerCase().includes(ql) || s.players.some(p => p.name.toLowerCase().includes(ql)));
+  const leagues = (data.results || []).map(l => ({ ...l, shown: l.trades.filter(t => (!mineOnly || t.mine) && hit(t)) })).filter(l => l.shown.length);
+  const pill = (on, label, onClick) => e('button', { onClick, style: { flex: 1, padding: '7px 4px', fontSize: 12, fontWeight: 700, borderRadius: 8, border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--surface2)' : 'transparent', color: on ? 'var(--text)' : 'var(--text3)' } }, label);
+  const asset = (key, left, main, sub, color) => e('div', { key, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' } },
+    left, e('div', { style: { flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: color || 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, main,
+      sub ? e('span', { style: { fontSize: 11, fontWeight: 400, color: 'var(--text3)', marginLeft: 6 } }, sub) : null));
+  const sideBlock = (t, s, i) => {
+    const other = t.sides.filter(x => x !== s);
+    const label = s.is_me ? 'YOU GOT' : (t.mine && t.teams === 2) ? `YOU GAVE → ${s.team}` : `${s.team} got`;
+    const col = s.is_me ? 'var(--accent)' : (t.mine && t.teams === 2) ? 'var(--accent2)' : 'var(--text2)';
+    const items = [
+      ...s.players.map(p => asset(p.id, e(PosBadge, { pos: p.position || '—' }), p.name, `${p.team}${p.age ? ` · ${p.age}` : ''}`)),
+      ...s.picks.map((pk, j) => asset('pk' + j, e('span', { className: 'pos', style: { background: 'var(--surface2)', color: 'var(--purple)' } }, 'PK'),
+        `${pk.label} round pick`, pk.from ? `(${pk.original_is_mine ? 'your' : `${pk.from}’s`})` : '(own)', 'var(--purple)')),
+      ...(s.faab ? [asset('faab', e('span', { className: 'pos', style: { background: 'var(--surface2)', color: 'var(--accent3)' } }, '$'), `$${s.faab} FAAB`, null, 'var(--accent3)')] : []),
+    ];
+    return e('div', { key: s.roster_id, style: { padding: '6px 0', borderTop: i ? '1px solid var(--border)' : 'none' } },
+      e('div', { style: { fontSize: 11, fontWeight: 800, letterSpacing: 0.4, color: col, marginBottom: 2, textTransform: s.is_me || (t.mine && t.teams === 2) ? 'none' : 'none' } }, label),
+      items.length ? items : e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, 'Nothing'));
+  };
+  const tradeCard = t => e('div', { key: t.id, style: {
+      background: t.mine ? 'rgba(0,229,160,0.08)' : 'var(--surface)', border: `1px solid ${t.mine ? 'var(--accent)' : 'var(--border)'}`,
+      borderLeft: `${t.mine ? 5 : 1}px solid ${t.mine ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 10, padding: '8px 12px', marginBottom: 8 } },
+    e('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 2 } },
+      t.mine ? e('span', { style: { fontSize: 11, fontWeight: 800, color: '#0d0f14', background: 'var(--accent)', borderRadius: 6, padding: '2px 7px' } }, '⭐ YOUR TRADE')
+             : e('span', { style: { fontSize: 11, color: 'var(--text3)' } }, t.teams > 2 ? `${t.teams}-team trade` : t.sides.map(s => s.team).join(' ⇄ ')),
+      e('span', { style: { fontSize: 11, color: 'var(--text3)', whiteSpace: 'nowrap' } }, `${fmt(t.created)} · wk ${t.week}`)),
+    // your trade: show "you got" then "you gave"; others: each team's haul
+    t.sides.map((s, i) => sideBlock(t, s, i)));
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.mine ?? 0, label: 'Your Trades', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.trades ?? 0, label: 'All Trades', color: 'var(--text)' }),
+      e(StatTile, { value: sm.leagues_with_trades ?? 0, label: 'Leagues w/ Trades', color: 'var(--accent4)' }),
+      e(StatTile, { value: sm.leagues_quiet ?? 0, label: 'No Trades', color: 'var(--text3)' })),
+    e('input', { className: 'field', style: { width: '100%', marginBottom: 8 }, placeholder: 'Search a player or team', value: q, onChange: ev => setQ(ev.target.value) }),
+    e('div', { style: { display: 'flex', gap: 6, marginBottom: 12 } },
+      pill(!mineOnly, `All trades (${sm.trades ?? 0})`, () => setMineOnly(false)), pill(mineOnly, `⭐ Mine (${sm.mine ?? 0})`, () => setMineOnly(true))),
+    leagues.map(l => e(Card, { key: l.league_id, borderColor: l.mine ? 'var(--accent)' : 'var(--border)' },
+      e('div', { className: 'card-header', style: { marginBottom: 6 } },
+        e('div', { style: { minWidth: 0 } },
+          e('div', { className: 'card-title', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, l.league),
+          e('div', { className: 'card-subtitle' }, l.my_team)),
+        e('div', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
+          l.mine ? e('div', { style: { fontSize: 12, fontWeight: 800, color: 'var(--accent)' } }, `⭐ ${l.mine} yours`) : null,
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${l.trades.length} trade${l.trades.length === 1 ? '' : 's'}`))),
+      l.shown.map(tradeCard))),
+    !leagues.length && e(Alert, { type: 'info' }, e('p', null, mineOnly ? 'You haven’t made any trades in these weeks.' : ql ? 'No trades match that search.' : 'No trades in these weeks.')),
+    data.quiet?.length > 0 && !mineOnly && !ql && e('details', { className: 'card', style: { borderLeft: '3px solid var(--text3)' } },
+      e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--text3)' } }, `💤 No trades (${data.quiet.length} league${data.quiet.length === 1 ? '' : 's'})`),
+      data.quiet.map(r => e('div', { key: r.league_id, style: { fontSize: 12, padding: '6px 0', borderBottom: '1px solid var(--border)', color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league))),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
+}
+
 // ── PLAYOFF CALENDAR VIEW ─────────────────────────────────────────────────────
 function PlayoffCalendarView({ data }) {
   if (!data?.groups?.length) return e(Alert, { type: 'info' }, e('p', null, 'No leagues found.'));
@@ -290,6 +352,8 @@ FF.tab({ id: 'leagues', label: 'Leagues', icon: '📋', groups: [
       endpoint: '/analysis/playoff-calendar', view: PlayoffCalendarView },
     { id: 'trade-deadlines', title: 'Trade Deadlines', sub: 'Every league’s deadline, soonest first', icon: '⏰', tint: 'red',
       endpoint: '/analysis/trade-deadlines', view: TradeDeadlinesView, badge: d => d.summary && cnt(d.summary.this_week, 'red') },
+    { id: 'recent-trades', title: 'Recent Trades', sub: 'Every trade in your leagues, last 2 weeks — yours highlighted', icon: '🔁', tint: 'green',
+      endpoint: '/analysis/recent-trades', view: RecentTradesView, badge: d => d.summary && cnt(d.summary.mine, 'green') },
     { id: 'season-records', title: 'Season Records', sub: 'Record, PF, PA and max PF', icon: '📒', tint: 'green',
       endpoint: '/analysis/season-records', view: SeasonRecordsView },
   ]},

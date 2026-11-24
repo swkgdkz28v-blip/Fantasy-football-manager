@@ -2697,6 +2697,36 @@ def _simulate_league(team_ids, strength, schedule, base_wins, base_pf, playoff_s
     return out
 
 
+def _clinch_math(me, team_ids, wins, spots, games_left, name_of, in_spot=None):
+    """Clinched / eliminated / magic number / elimination number for one team, from wins alone.
+    Every team is assumed to have `games_left` games (weeks left, doubled with a league-median game), and a tie
+    in wins is assumed to go against you — so a ✅ or ❌ is never wrong, it can only show up a little late.
+    Magic number: your wins + losses by the chaser (the team whose best case decides your spot) needed to clinch.
+    Elimination number: your losses + wins by the team you have to catch needed to knock you out."""
+    others = [r for r in team_ids if r != me]
+    if spots >= len(team_ids):
+        return {"code": "clinched"}
+    if not others:
+        return None
+    my_w = wins[me]
+    # Clinch: fewer than `spots` other teams can reach your current win total
+    best = sorted(others, key=lambda r: -(wins[r] + games_left))
+    chaser = best[spots - 1]                     # the spots-th best possible finish among the others
+    if wins[chaser] + games_left < my_w:
+        return {"code": "clinched"}
+    # Eliminated: at least `spots` other teams already have more wins than you can reach
+    now = sorted(others, key=lambda r: -wins[r])
+    target = now[spots - 1]                      # the team holding the last spot you'd need to pass
+    if wins[target] > my_w + games_left:
+        return {"code": "eliminated"}
+    fmt = lambda x: int(x) if float(x).is_integer() else x
+    if in_spot is None:
+        in_spot = 1 + sum(1 for r in others if wins[r] > my_w) <= spots
+    if in_spot:
+        return {"code": "magic", "number": fmt(wins[chaser] + games_left + 1 - my_w), "vs": name_of(chaser), "games_left": games_left}
+    return {"code": "elim", "number": fmt(my_w + games_left - wins[target] + 1), "vs": name_of(target), "games_left": games_left}
+
+
 @router.post("/analysis/playoff-odds")
 async def get_playoff_odds(req: UserRequest, only_league_id: Optional[str] = None):
     """Monte Carlo playoff odds per league using each team's actual scoring mean ± sd and the real remaining schedule.
@@ -2823,6 +2853,9 @@ async def get_playoff_odds(req: UserRequest, only_league_id: Optional[str] = Non
         rank_now = standings.index(my_roster["roster_id"]) + 1
         line_wins = base_wins[standings[min(playoff_spots, len(standings)) - 1]]          # last team in
         first_out_wins = base_wins[standings[playoff_spots]] if playoff_spots < len(standings) else None
+        clinch = _clinch_math(my_roster["roster_id"], team_ids, base_wins, playoff_spots,
+                              (regular_season_end - week + 1) * (2 if settings.get("league_average_match") else 1),
+                              lambda rid: team_name(next(x for x in rosters if x["roster_id"] == rid)), rank_now <= playoff_spots)
         others = sorted([(sim[r]["playoff_pct"], team_name(next(x for x in rosters if x["roster_id"] == r)), base_wins[r]) for r in team_ids], key=lambda t: -t[0])
 
         results.append({
@@ -2835,7 +2868,7 @@ async def get_playoff_odds(req: UserRequest, only_league_id: Optional[str] = Non
             "my_mu": round(strength[my_roster["roster_id"]][0], 1), "my_sd": round(strength[my_roster["roster_id"]][1], 1),
             "league_mu": round(league_mu, 1),
             "playoff_pct": pct, "bye_pct": me["bye_pct"], "exp_wins": me["exp_wins"], "wins_hist": me["wins_hist"],
-            "status": status, "color": color, "advice": advice,
+            "status": status, "color": color, "advice": advice, "clinch": clinch,
             "next_game": next_game,
             "league_table": [{"team": n, "wins": w, "playoff_pct": p} for p, n, w in others],
         })
@@ -4383,6 +4416,7 @@ async def get_playoff_picture(req: UserRequest):
                                  "playoff_pct", "bye_pct", "exp_wins", "status", "color", "games_left", "my_pf")}
         ng = r.get("next_game") or {}
         row["next"] = {"opp": ng.get("opp_name"), "win_prob": ng.get("win_prob"), "swing": ng.get("swing")} if ng else None
+        row["clinch"] = r.get("clinch")
         if r["rank"] <= r["playoff_spots"]:
             row["seed"] = r["rank"]
             row["has_bye"] = r["rank"] <= r["byes"]
@@ -4401,10 +4435,13 @@ async def get_playoff_picture(req: UserRequest):
                     "shaky": sum(1 for x in inside if x["playoff_pct"] < 60),
                     "live_out": sum(1 for x in outside if x["playoff_pct"] >= 10),
                     "dead": sum(1 for x in outside if x["playoff_pct"] < 10),
-                    "exp_playoff_teams": round(sum(x["playoff_pct"] for x in inside + outside) / 100, 1)},
+                    "exp_playoff_teams": round(sum(x["playoff_pct"] for x in inside + outside) / 100, 1),
+                    "clinched": sum(1 for x in inside + outside if (x.get("clinch") or {}).get("code") == "clinched"),
+                    "eliminated": sum(1 for x in inside + outside if (x.get("clinch") or {}).get("code") == "eliminated")},
         "inside": inside, "outside": outside,
         "note": "In a spot = current seed by wins, then points for. Cushion = wins ahead of the first team out. "
-                "Odds come from the Playoff Odds simulation. Leagues past their regular season aren't listed.",
+                "Odds come from the Playoff Odds simulation. Leagues past their regular season aren't listed. "
+                "✅/❌ and magic/elimination numbers go by wins only and assume you lose any tie in wins (points for can't be predicted).",
     }
 
 

@@ -665,12 +665,21 @@ function PlayoffPictureView({ data }) {
   const sm = data.summary || {};
   if (!sm.leagues) return e(Alert, { type: 'info' }, e('p', null, 'No leagues still in the regular season.'));
   const pctColor = p => p >= 85 ? 'var(--accent)' : p >= 60 ? 'var(--accent4)' : p >= 35 ? 'var(--accent3)' : p >= 10 ? '#ff8c42' : 'var(--accent2)';
+  // clinch math for your team: ✅ clinched · ❌ eliminated · magic number (in a spot) · elimination number (out)
+  const CL = { clinched: ['✅ CLINCHED', 'var(--accent)'], eliminated: ['❌ ELIMINATED', 'var(--accent2)'], magic: ['🔢 MAGIC', 'var(--accent4)'], elim: ['⏳ ELIM', 'var(--accent3)'] };
+  const chip = c => { if (!c || !CL[c.code]) return null; const [t, col] = CL[c.code];
+    return e('span', { style: { fontSize: 10, fontWeight: 800, color: col, border: `1px solid ${col}`, borderRadius: 6, padding: '1px 6px', whiteSpace: 'nowrap', flexShrink: 0 } }, c.number != null ? `${t} ${c.number}` : t); };
+  const clLine = c => !c ? null : c.code === 'magic' ? `Clinches after any ${c.number}: your wins or ${c.vs} losses`
+    : c.code === 'elim' ? `Out after any ${c.number}: your losses or ${c.vs} wins` : null;
   const row = (r, left, right) => e('div', { key: r.league, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${pctColor(r.playoff_pct)}`, borderRadius: 10, marginBottom: 6 } },
     left,
     e('div', { style: { flex: 1, minWidth: 0 } },
-      e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
+      e('div', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
+        e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }, r.league),
+        chip(r.clinch)),
       e('div', { style: { fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-        `${r.team} · ${r.record} · #${r.rank}/${r.total_teams}${r.next && r.next.opp ? ` · next vs ${r.next.opp}${r.next.swing >= 20 ? ' 🔥' : ''}` : ''}`)),
+        `${r.team} · ${r.record} · #${r.rank}/${r.total_teams}${r.next && r.next.opp ? ` · next vs ${r.next.opp}${r.next.swing >= 20 ? ' 🔥' : ''}` : ''}`),
+      clLine(r.clinch) && e('div', { style: { fontSize: 11, color: CL[r.clinch.code][1], lineHeight: 1.3, marginTop: 1 } }, clLine(r.clinch))),
     right,
     e('div', { style: { textAlign: 'right', minWidth: 52 } },
       e('div', { style: { fontSize: 15, fontWeight: 800, color: pctColor(r.playoff_pct) } }, `${r.playoff_pct}%`),
@@ -692,6 +701,9 @@ function PlayoffPictureView({ data }) {
       e(StatTile, { value: sm.byes ?? 0, label: 'Holding A Bye', color: 'var(--accent)' }),
       e(StatTile, { value: sm.live_out ?? 0, label: 'Out, Still Alive', color: 'var(--accent3)' }),
       e(StatTile, { value: sm.exp_playoff_teams ?? 0, label: 'Expected Playoff Teams', color: 'var(--accent4)' })),
+    (sm.clinched > 0 || sm.eliminated > 0) && e('div', { style: { fontSize: 12, color: 'var(--text2)', marginBottom: 6 } },
+      sm.clinched > 0 ? e('span', { style: { color: 'var(--accent)', fontWeight: 700, marginRight: 12 } }, `✅ ${sm.clinched} clinched`) : null,
+      sm.eliminated > 0 ? e('span', { style: { color: 'var(--accent2)', fontWeight: 700 } }, `❌ ${sm.eliminated} eliminated`) : null),
     sm.shaky > 0 && e('div', { style: { fontSize: 12, color: 'var(--accent3)', marginBottom: 10 } }, `⚠️ ${sm.shaky} of your playoff spots are under 60% to hold.`),
     data.inside.length > 0 && e('div', null,
       secTitle(`✅ In a playoff spot (${data.inside.length}) — by seed`, 'var(--accent)'),
@@ -701,7 +713,8 @@ function PlayoffPictureView({ data }) {
       live.map(r => row(r, null, gb(r)))),
     dead.length > 0 && e('details', { className: 'card', style: { marginTop: 14, borderLeft: '3px solid var(--accent2)' } },
       e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--accent2)' } }, `🔨 Under 10% (${dead.length}) — sell mode`),
-      dead.map(r => lineRow(r.league, `${r.league} · ${r.record}`, `${r.games_back > 0 ? `${r.games_back} GB · ` : ''}${r.playoff_pct}%`, 'var(--accent2)'))),
+      dead.map(r => lineRow(r.league, `${r.league} · ${r.record}`,
+        `${r.clinch?.code === 'eliminated' ? '❌ · ' : r.clinch?.code === 'elim' ? `⏳ Elim ${r.clinch.number} · ` : ''}${r.games_back > 0 ? `${r.games_back} GB · ` : ''}${r.playoff_pct}%`, 'var(--accent2)'))),
     data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 10 } }, data.note));
 }
 

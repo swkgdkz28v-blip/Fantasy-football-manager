@@ -5,6 +5,12 @@ import asyncio
 import json
 import math
 import zlib
+from datetime import datetime, timezone
+try:
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+except Exception:          # pragma: no cover
+    _ET = timezone.utc
 from services.sleeper_client import *
 
 router = APIRouter(prefix="/api", tags=["analysis"])
@@ -448,6 +454,73 @@ async def _none():
     return {}
 
 
+# ── GAME STATE (shared by Week Record, Closest Games, There's A Chance) ──────
+
+def _clock_for_week(clock, week):
+    """ESPN's scoreboard only describes the week it's currently showing. On Mon/Tue it can still show last
+    week's finals, so ignore it unless its week matches the week being looked at."""
+    if not clock:
+        return {}
+    w = clock.get("_week")
+    if w is not None and int(w) != int(week):
+        return {}
+    return {k: v for k, v in clock.items() if not k.startswith("_")}
+
+
+def _game_state_fn(week, week_completed, schedule, clock, stats_map, players_db):
+    """Returns state(pid, team, actual) → 'final' | 'live' | 'pre' for one player's NFL game.
+    Order of trust: completed week → ESPN clock for this week → Sleeper schedule status → kickoff not reached
+    yet (always pre) → the player's own points/stats or a teammate's stats on game day (schedule lag) → pre."""
+    clock = _clock_for_week(clock, week)
+    now = datetime.now(_ET)
+    today = now.date().isoformat()
+    team_status, team_date = {}, {}
+    for g in schedule or []:
+        for t in (g.get("home"), g.get("away")):
+            if t:
+                team_status[t] = (g.get("status") or "").lower()
+                team_date[t] = str(g.get("date") or "")[:10]
+    teams_played = {(players_db.get(pid) or {}).get("team") for pid, st in stats_map.items() if (st.get("gp") or 0) >= 1}
+    teams_played.discard(None)
+
+    def kicked_off(team):
+        c = clock.get(team) or {}
+        k = c.get("kickoff")
+        if k:
+            try:
+                return datetime.fromisoformat(k.replace("Z", "+00:00")) <= now
+            except Exception:
+                pass
+        d = team_date.get(team)
+        return None if not d else d <= today
+
+    def state(pid, team, actual=0.0):
+        if week_completed:
+            return "final"
+        c = clock.get(team)
+        if c:
+            if c.get("state") == "post":
+                return "final"
+            if c.get("state") == "in":
+                return "live"
+        st = team_status.get(team)
+        if st in ("complete", "final", "post_game"):
+            return "final"
+        if st in ("in_game", "in_progress", "live", "halftime"):
+            return "live"
+        if c and c.get("state") == "pre":
+            return "pre"                       # ESPN says this week's game hasn't started
+        if kicked_off(team) is False:
+            return "pre"                       # game day hasn't arrived — ignore stray stats
+        if team_status and team not in team_status:
+            return "pre"                       # on bye
+        played = (stats_map.get(pid, {}).get("gp") or 0) >= 1 or bool(actual)
+        if played or team in teams_played:
+            return "live"                      # game day, schedule feed lagging but stats are coming in
+        return "pre"
+    return state, clock
+
+
 @router.post("/analysis/week-record")
 async def get_week_record(req: WeekRequest):
     """Projected record (pre-game projections, frozen) plus a live 'expected' record where players who
@@ -464,35 +537,11 @@ async def get_week_record(req: WeekRequest):
         get_game_clock() if week >= current_week else _none()
     )
     stats_map = build_stats_map(stats_array)
-    team_status = {}
-    for g in schedule:
-        for t in (g.get("home"), g.get("away")):
-            if t:
-                team_status[t] = (g.get("status") or "").lower()
-    have_schedule = bool(team_status)
-    teams_played = {(players_db.get(pid) or {}).get("team") for pid, st in stats_map.items() if (st.get("gp") or 0) >= 1}
+    _state, clock = _game_state_fn(week, week_completed, schedule, clock, stats_map, players_db)
+    have_schedule = bool(schedule)
 
     def game_state(pid, p, actual):
-        """'final' | 'live' | 'pre' for one starter. Uses the NFL schedule first, then player-level evidence so a
-        game the schedule still lists as pre-game but which already has points/stats counts as in progress."""
-        if week_completed:
-            return "final"
-        team = p.get("team")
-        c = (clock or {}).get(team)
-        if c and c.get("state") == "post":
-            return "final"
-        if c and c.get("state") == "in":
-            return "live"
-        st = team_status.get(team)
-        played = (stats_map.get(pid, {}).get("gp") or 0) >= 1
-        started = played or actual != 0 or team in teams_played
-        if st in ("complete", "final", "post_game"):
-            return "final"
-        if st in ("in_game", "in_progress", "live", "halftime"):
-            return "live"
-        if started:
-            return "live"          # schedule lags or is missing, but the player has points/stats: in progress
-        return "pre"
+        return _state(pid, p.get("team"), actual)
 
     def progress(pid, p):
         """Share of the player's game already played (0..1): the live game clock when available,
@@ -638,6 +687,7 @@ async def get_theres_a_chance(req: UserRequest):
     )
     chance_clock = await get_game_clock() if week >= current_week else {}
     stats_map = build_stats_map(stats_array)
+    _cstate, chance_clock = _game_state_fn(week, week < current_week, schedule, chance_clock, stats_map, players_db)
 
     team_status = {}
     for g in schedule:
@@ -648,16 +698,7 @@ async def get_theres_a_chance(req: UserRequest):
     teams_played = {(players_db.get(pid) or {}).get("team") for pid, st in stats_map.items() if (st.get("gp") or 0) >= 1}
 
     def game_state(pid, p):
-        st = team_status.get(p.get("team"))
-        if st in ("complete", "final", "post_game"):
-            return "final"
-        if st in ("in_game", "in_progress", "live", "halftime"):
-            return "live"
-        if st in ("pre_game", "scheduled"):
-            return "pre"
-        if (stats_map.get(pid, {}).get("gp") or 0) >= 1 or p.get("team") in teams_played:
-            return "final" if have_schedule else "live"
-        return "pre"
+        return _cstate(pid, p.get("team"))
 
     def game_progress(pid, p):
         """0..1 share of a live game already played: live game clock, else team offensive snaps (0.5 if unknown)."""
@@ -4904,26 +4945,10 @@ async def get_closest_games(req: UserRequest):
         get_stats(season, week), get_schedule(season, week),
         get_game_clock() if week >= current_week else _none())
     stats_map = build_stats_map(stats_array)
-    team_status = {t: (g.get("status") or "").lower() for g in schedule or [] for t in (g.get("home"), g.get("away")) if t}
-    teams_played = {(players_db.get(pid) or {}).get("team") for pid, st in stats_map.items() if (st.get("gp") or 0) >= 1}
+    _state, clock = _game_state_fn(week, week_completed, schedule, clock, stats_map, players_db)
 
     def state(pid, pts):
-        if week_completed:
-            return "final"
-        team = (players_db.get(pid) or {}).get("team")
-        c = (clock or {}).get(team)
-        if c and c.get("state") == "post":
-            return "final"
-        if c and c.get("state") == "in":
-            return "live"
-        st = team_status.get(team)
-        if st in ("complete", "final", "post_game"):
-            return "final"
-        if st in ("in_game", "in_progress", "live", "halftime"):
-            return "live"
-        if (stats_map.get(pid, {}).get("gp") or 0) >= 1 or pts or team in teams_played:
-            return "live"
-        return "pre"
+        return _state(pid, (players_db.get(pid) or {}).get("team"), pts)
 
     def side(m):
         pts_map = m.get("players_points") or {}

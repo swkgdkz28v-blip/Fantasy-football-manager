@@ -11,9 +11,14 @@ function OptimalLineupView({ data }) {
       e(StatTile, { value: data.summary?.need_lineup_changes ?? (data.results?.length || 0), label: 'Lineup Changes', color: 'var(--accent3)' }),
       e(StatTile, { value: data.summary?.have_fa_upgrades ?? 0, label: 'FA Upgrades', color: 'var(--accent4)' })
     ),
-    data.results?.map(r => e(Card, { key: r.league, borderColor: r.lineup_only ? 'var(--accent4)' : undefined },
+    data.results?.map((r, idx) => e(Card, { key: r.league, borderColor: r.lineup_only ? 'var(--accent4)' : undefined },
       e('div', { className: 'card-header' },
-        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e('div', { style: { display: 'flex', alignItems: 'flex-start', gap: 10, minWidth: 0 } },
+          // league counter: "3 of 33" so you know how many are left to update
+          e('div', { style: { minWidth: 34, textAlign: 'center', flexShrink: 0 } },
+            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', lineHeight: 1, color: 'var(--accent3)' } }, idx + 1),
+            e('div', { style: { fontSize: 9, color: 'var(--text3)', whiteSpace: 'nowrap' } }, `of ${data.results.length}`)),
+          e('div', { style: { minWidth: 0 } }, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team))),
         e('div', { style: { textAlign: 'right' } },
           e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', color: 'var(--accent)' } }, r.optimal_pts?.toFixed(1)),
           e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'optimal pts'),

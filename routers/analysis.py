@@ -4848,3 +4848,96 @@ async def get_recent_trades(req: UserRequest):
         "note": f"Completed trades from week{'s' if len(weeks) > 1 else ''} {'–'.join(str(w) for w in weeks)}. "
                 "Pending or rejected offers aren't visible through Sleeper's public data.",
     }
+
+
+# ── CLOSEST GAMES (your matchups, closest score → biggest blowout) ────────────
+
+@router.post("/analysis/closest-games")
+async def get_closest_games(req: UserRequest):
+    """The user's matchup in every league for the week, ordered by the current scoring margin, closest first.
+    Shows each side's score, win/loss (or leading/trailing while games are live) and how many starters each
+    side still has playing or yet to play, so a close game that's still open is easy to spot."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    week = req.week or current_week
+    week_completed = week < current_week
+    fetched, stats_array, schedule, clock = await asyncio.gather(
+        asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"]),
+                                        get_matchups(lg["league_id"], week)) for lg in leagues]),
+        get_stats(season, week), get_schedule(season, week),
+        get_game_clock() if week >= current_week else _none())
+    stats_map = build_stats_map(stats_array)
+    team_status = {t: (g.get("status") or "").lower() for g in schedule or [] for t in (g.get("home"), g.get("away")) if t}
+    teams_played = {(players_db.get(pid) or {}).get("team") for pid, st in stats_map.items() if (st.get("gp") or 0) >= 1}
+
+    def state(pid, pts):
+        if week_completed:
+            return "final"
+        team = (players_db.get(pid) or {}).get("team")
+        c = (clock or {}).get(team)
+        if c and c.get("state") == "post":
+            return "final"
+        if c and c.get("state") == "in":
+            return "live"
+        st = team_status.get(team)
+        if st in ("complete", "final", "post_game"):
+            return "final"
+        if st in ("in_game", "in_progress", "live", "halftime"):
+            return "live"
+        if (stats_map.get(pid, {}).get("gp") or 0) >= 1 or pts or team in teams_played:
+            return "live"
+        return "pre"
+
+    def side(m):
+        pts_map = m.get("players_points") or {}
+        live = pre = 0
+        for pid in (m.get("starters") or []):
+            pid = str(pid)
+            if not pid or pid == "0":
+                continue
+            s = state(pid, pts_map.get(pid) or 0)
+            live += s == "live"
+            pre += s == "pre"
+        return round(float(m.get("custom_points") or m.get("points") or 0), 2), live, pre
+
+    games = []
+    for order, (lg, (rosters, league_users, matchups)) in enumerate(zip(leagues, fetched)):
+        my = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        if not my:
+            continue
+        mm = next((m for m in matchups or [] if m["roster_id"] == my["roster_id"]), None)
+        if not mm or mm.get("matchup_id") is None:
+            continue
+        om = next((m for m in matchups if m.get("matchup_id") == mm["matchup_id"] and m["roster_id"] != my["roster_id"]), None)
+        if not om:
+            continue
+        opp_r = next((r for r in rosters if r["roster_id"] == om["roster_id"]), None)
+        my_pts, my_live, my_pre = side(mm)
+        op_pts, op_live, op_pre = side(om)
+        done = week_completed or not (my_live or my_pre or op_live or op_pre)
+        diff = round(my_pts - op_pts, 2)
+        if done:
+            result = "W" if diff > 0 else "L" if diff < 0 else "T"
+        else:
+            result = "Leading" if diff > 0 else "Trailing" if diff < 0 else "Tied"
+        games.append({"order": order, "league_id": lg["league_id"], "league": lg["name"],
+                      "my_team": _team_name(my, league_users, user.get("display_name", "")),
+                      "opponent": _team_name(opp_r, league_users, "Opponent"),
+                      "my_points": my_pts, "opp_points": op_pts, "diff": diff, "margin": abs(diff),
+                      "final": done, "result": result, "started": bool(my_pts or op_pts),
+                      "my_left": {"live": my_live, "pre": my_pre}, "opp_left": {"live": op_live, "pre": op_pre}})
+    games.sort(key=lambda g: (g["margin"], g["order"]))
+    fin = [g for g in games if g["final"]]
+    return {
+        "username": req.username, "week": week,
+        "summary": {"games": len(games), "wins": sum(g["result"] == "W" for g in games),
+                    "losses": sum(g["result"] == "L" for g in games), "ties": sum(g["result"] == "T" for g in games),
+                    "in_progress": len(games) - len(fin),
+                    "not_started": sum(not g["started"] for g in games),
+                    "within_5": sum(g["started"] and g["margin"] < 5 for g in games),
+                    "within_10": sum(g["started"] and g["margin"] < 10 for g in games),
+                    "blowouts": sum(g["margin"] >= 40 for g in games),
+                    "close_losses": sum(g["result"] == "L" and g["margin"] < 5 for g in fin)},
+        "games": games,
+        "note": "Ordered by current margin. Live games can still move; under each score you'll see how many starters are playing now or yet to play.",
+    }

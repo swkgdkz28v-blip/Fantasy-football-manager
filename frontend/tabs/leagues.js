@@ -1,366 +1,366 @@
-/* Fantasy Manager — tabs/leagues.js
-   The Leagues tab: its result screens and the list that opens them. Needs core.js loaded first. */
+/* Fantasy Manager — tabs/lineups.js
+   The Lineups tab: its result screens and the list that opens them. Needs core.js loaded first. */
 
-// ── LEAGUE SHEET VIEW ─────────────────────────────────────────────────────────
-function LeagueSheetView({ data }) {
-  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No leagues found.'));
-  const sm = data.summary || {};
-  const [sort, setSort] = useState('league');
-  const [needsOnly, setNeedsOnly] = useState(false);
-  let rows = data.results.filter(r => !needsOnly || r.needs.length);
-  const cmp = {
-    league: (a, b) => a.order - b.order,
-    record: (a, b) => b.win_pct - a.win_pct || a.order - b.order,
-    proj: (a, b) => b.proj - a.proj,
-    needs: (a, b) => (b.needs.filter(n => n.critical).length - a.needs.filter(n => n.critical).length) || (b.needs.length - a.needs.length) || a.order - b.order,
-  };
-  rows = [...rows].sort(cmp[sort]);
-  const btn = (id, label) => e('button', { key: id, onClick: () => setSort(id), style: { flex: 1, padding: '8px 4px', fontSize: 12, fontWeight: 700, borderRadius: 8, border: `1px solid ${sort === id ? 'var(--accent)' : 'var(--border)'}`, background: sort === id ? 'var(--surface2)' : 'transparent', color: sort === id ? 'var(--text)' : 'var(--text3)' } }, label);
-  const recColor = p => p > 0.5 ? 'var(--accent)' : p < 0.5 ? 'var(--accent2)' : 'var(--text2)';
+function OptimalLineupView({ data }) {
+  if (!data) return null;
+  const total = (data.results?.length || 0) + (data.optimal_leagues?.length || 0);
   return e('div', null,
     e('div', { className: 'stat-row' },
-      e(StatTile, { value: sm.leagues ?? 0, label: 'Leagues', color: 'var(--text2)' }),
-      e(StatTile, { value: `${sm.proj_wins ?? 0}-${sm.proj_losses ?? 0}`, label: `Wk ${data.week} Projected`, color: 'var(--accent4)' }),
-      e(StatTile, { value: sm.with_needs ?? 0, label: 'With Needs', color: 'var(--accent3)' }),
-      e(StatTile, { value: sm.critical ?? 0, label: "Can't Fill", color: 'var(--accent2)' })),
-    e('div', { style: { display: 'flex', gap: 6, marginBottom: 8 } }, btn('league', 'League'), btn('record', 'Record'), btn('proj', 'Proj'), btn('needs', 'Needs')),
-    e('label', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text2)', marginBottom: 12 } },
-      e('input', { type: 'checkbox', checked: needsOnly, onChange: ev => setNeedsOnly(ev.target.checked) }), 'Only leagues with needs'),
-    rows.map(r => e('div', { key: r.league, style: { padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${r.needs.some(n => n.critical) ? 'var(--accent2)' : r.needs.length ? 'var(--accent3)' : 'var(--accent)'}`, borderRadius: 8, marginBottom: 6 } },
-      e('div', { style: { display: 'flex', alignItems: 'baseline', gap: 10 } },
-        e('div', { style: { flex: 1, minWidth: 0 } },
-          e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
-          e('div', { style: { fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.team)),
-        e('div', { style: { textAlign: 'right', minWidth: 46 } },
-          e('div', { style: { fontSize: 14, fontWeight: 800, color: recColor(r.win_pct) } }, r.record),
-          e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'record')),
-        e('div', { style: { textAlign: 'right', minWidth: 62 } },
-          e('div', { style: { fontSize: 14, fontWeight: 800, color: r.proj_win == null ? 'var(--text)' : r.proj_win ? 'var(--accent)' : 'var(--accent2)' } }, r.proj.toFixed(1)),
-          e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, r.opp_proj != null ? `vs ${r.opp_proj.toFixed(1)}` : 'proj'))),
-      e('div', { style: { fontSize: 12, color: 'var(--text2)', margin: '6px 0 4px', fontFamily: 'ui-monospace, Menlo, monospace', wordBreak: 'break-word' } }, r.lineup),
-      r.needs.length
-        ? e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 5 } }, r.needs.map(n => e('span', { key: n.position, style: { fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 5, border: `1px solid ${n.critical ? 'var(--accent2)' : 'var(--accent3)'}`, color: n.critical ? 'var(--accent2)' : 'var(--accent3)' } }, `${n.position} ${n.have}/${n.need}`)))
-        : e('div', { style: { fontSize: 11, color: 'var(--accent)' } }, '✓ No needs')
+      e(StatTile, { value: total, label: 'Leagues', color: 'var(--text2)' }),
+      e(StatTile, { value: data.optimal_leagues?.length || 0, label: 'Already Optimal', color: 'var(--accent)' }),
+      e(StatTile, { value: data.summary?.need_lineup_changes ?? (data.results?.length || 0), label: 'Lineup Changes', color: 'var(--accent3)' }),
+      e(StatTile, { value: data.summary?.have_fa_upgrades ?? 0, label: 'FA Upgrades', color: 'var(--accent4)' })
+    ),
+    data.results?.map((r, idx) => e(Card, { key: r.league, borderColor: r.lineup_only ? 'var(--accent4)' : undefined },
+      e('div', { className: 'card-header' },
+        e('div', { style: { display: 'flex', alignItems: 'flex-start', gap: 10, minWidth: 0 } },
+          // league counter: "3 of 33" so you know how many are left to update
+          e('div', { style: { minWidth: 34, textAlign: 'center', flexShrink: 0 } },
+            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', lineHeight: 1, color: 'var(--accent3)' } }, idx + 1),
+            e('div', { style: { fontSize: 9, color: 'var(--text3)', whiteSpace: 'nowrap' } }, `of ${data.results.length}`)),
+          e('div', { style: { minWidth: 0 } }, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team))),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', color: 'var(--accent)' } }, r.optimal_pts?.toFixed(1)),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'optimal pts'),
+          !r.lineup_only && e('div', { style: { fontSize: 11, color: 'var(--accent3)' } }, `+${r.gain?.toFixed(1)} vs current`),
+          r.fa_gain > 0 && e('div', { style: { fontSize: 11, color: 'var(--accent4)' } }, `+${r.fa_gain} more via FAs`),
+          r.locked_count > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `🔒 ${r.locked_count} locked (played)`)
+        )
+      ),
+      r.lineup_only && e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 8 } }, 'Roster lineup is already optimal — free agents below would improve it.'),
+      e(MovesList, { moves: r.moves, ptsKey: 'pts' }),
+      r.fa_upgrades?.length > 0 && e('div', { style: { marginBottom: 12 } },
+        e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent4)', marginBottom: 6 } }, r.taxi_upgrades > 0 ? '🚕 Taxi / 🆓 Free Agent Upgrades' : '🆓 Free Agent Upgrades'),
+        r.fa_upgrades.map((u, i) => e('div', { key: i, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'rgba(92,158,255,0.06)', border: '1px solid rgba(92,158,255,0.3)', borderRadius: 8, marginBottom: 4 } },
+          e('span', { style: { fontSize: 10, fontWeight: 800, color: u.fa.source === 'taxi' ? 'var(--accent3)' : 'var(--accent4)', minWidth: 54 } }, `${u.fa.source === 'taxi' ? '🚕' : '+'} ${u.slot}`),
+          e(PosBadge, { pos: u.fa.position }),
+          e('div', { style: { flex: 1, minWidth: 0 } },
+            e('div', { style: { fontSize: 12, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `${u.fa.name} (${u.fa.team})`, u.fa.injury_status ? e('span', { style: { fontSize: 9, color: 'var(--accent3)' } }, ` ${u.fa.injury_status}`) : null),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${u.fa.source === 'taxi' ? 'promote from taxi · ' : 'free agent · '}${u.current ? `over ${u.current.name} (${u.current.pts})` : 'fills empty slot'}`)),
+          e('span', { style: { fontSize: 12, fontWeight: 700, color: 'var(--accent4)' } }, `${u.fa.pts} (+${u.gain})`)
+        ))
+      ),
+      e('details', null,
+      e('summary', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6, cursor: 'pointer' } }, 'Full optimal lineup'),
+      r.lineup?.map((os, i) => {
+        const p = os.player;
+        if (!p) return e('div', { key: i, className: 'player-row', style: { opacity: 0.5 } }, e('span', { style: { fontSize: 10, color: 'var(--text3)', minWidth: 52 } }, os.slot), e('span', { style: { fontSize: 11, color: 'var(--accent2)' } }, 'Empty'));
+        const ptColor = p.pts >= 20 ? 'var(--accent)' : p.pts >= 10 ? 'var(--text2)' : 'var(--accent2)';
+        return e('div', { key: i, className: 'player-row', style: { opacity: os.locked ? 0.6 : 1, border: `1px solid ${!p.is_starter ? 'rgba(255,179,71,0.4)' : 'var(--border)'}` } },
+          e('span', { style: { fontSize: 9, color: 'var(--text3)', minWidth: 52, textAlign: 'center' } }, os.locked ? `🔒 ${os.slot}` : os.slot),
+          e(PosBadge, { pos: p.position }),
+          e('span', { className: 'player-name' }, p.name),
+          e('span', { className: 'player-team' }, p.team),
+          !p.is_starter && e('span', { style: { fontSize: 9, color: 'var(--accent3)', fontWeight: 700 } }, '▲'),
+          e('span', { style: { fontSize: 9, color: 'var(--text3)', textAlign: 'right', lineHeight: 1.3, whiteSpace: 'nowrap' } },
+            e('div', null, os.locked ? 'actual' : `proj ${p.proj ?? p.pts}`),
+            e('div', null, p.gp > 0 ? `avg ${p.avg}${p.std != null ? ` ±${p.std}` : ''} · ${p.gp} GP` : '0 GP')
+          ),
+          e('span', { className: 'player-pts', style: { color: ptColor } }, p.pts)
+        );
+      }))
     )),
-    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
+    data.results?.length > 0 && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginBottom: 10 } },
+      data.weeks_completed > 0
+        ? `Lineup ranked on week projections (actual points once a player has played). Season average ± std dev per game played (${data.weeks_completed} week${data.weeks_completed === 1 ? '' : 's'} of stats) shown for reference.`
+        : 'Lineup ranked on week projections. No completed weeks yet, so no season averages.'),
+    data.optimal_leagues?.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 8 } }, `✅ Already Optimal (${data.optimal_leagues.length})`),
+      data.optimal_leagues.map(l => e('div', { key: l.league, style: { display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid var(--border)', fontSize: 12 } },
+        e('span', null, l.league, l.team ? e('span', { style: { color: 'var(--text3)', fontSize: 10 } }, ` · ${l.team}`) : null),
+        e('span', { style: { fontWeight: 700, color: 'var(--accent)' } }, `${l.pts} pts`)
+      ))
+    )
+  );
 }
 
-// ── SEASON RECORDS VIEW ───────────────────────────────────────────────────────
-function SeasonRecordsView({ data }) {
-  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No leagues found.'));
-  const sm = data.summary || {};
-  const [sortKey, setSortKey] = useState('league');
-  const [desc, setDesc] = useState(false);
-  const cols = [
-    ['league', 'League', 'left'], ['record', 'Rec', 'right'], ['pf', 'PF', 'right'], ['pa', 'PA', 'right'], ['max_pf', 'Max PF', 'right'], ['efficiency', 'Eff%', 'right'],
-  ];
-  const rows = [...data.results];
-  if (sortKey !== 'league') {
-    const k = sortKey === 'record' ? 'win_pct' : sortKey;
-    rows.sort((a, b) => ((b[k] ?? -1) - (a[k] ?? -1)) * (desc ? -1 : 1) || a.league.localeCompare(b.league));
-  } else if (desc) rows.reverse();
-  const click = k => { if (sortKey === k) setDesc(!desc); else { setSortKey(k); setDesc(false); } };
-  const effColor = v => v == null ? 'var(--text3)' : v >= 90 ? 'var(--accent)' : v >= 80 ? 'var(--accent3)' : 'var(--accent2)';
-  const recColor = p => p > 0.5 ? 'var(--accent)' : p < 0.5 ? 'var(--accent2)' : 'var(--text2)';
-  const th = ([k, label, align]) => e('th', { key: k, onClick: () => click(k), style: { textAlign: align, fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: sortKey === k ? 'var(--accent)' : 'var(--text3)', padding: '6px 4px', cursor: 'pointer', whiteSpace: 'nowrap', borderBottom: '1px solid var(--border)' } }, label, sortKey === k ? (desc ? ' ▼' : ' ▲') : '');
-  const td = (c, align, extra) => e('td', { style: { textAlign: align, padding: '6px 4px', fontSize: 11, borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap', ...extra } }, c);
+// ── UPGRADE RECS VIEW ─────────────────────────────────────────────────────────
+function UpgradeRecsView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
+  const hasUpgrades = data.results.filter(r => r.moves?.length > 0);
+  const optimal = data.results.filter(r => !r.moves?.length);
+
   return e('div', null,
-    e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 8 } }, `${data.season} SEASON RECORDS · THROUGH WEEK ${Math.max((data.week || 1) - 1, 0)}`),
     e('div', { className: 'stat-row' },
-      e(StatTile, { value: sm.record, label: `Overall (${sm.leagues})`, color: recColor(sm.win_pct) }),
-      e(StatTile, { value: sm.pf?.toLocaleString(), label: 'Points For', color: 'var(--accent)' }),
-      e(StatTile, { value: sm.pa?.toLocaleString(), label: 'Points Against', color: 'var(--accent2)' }),
-      e(StatTile, { value: sm.avg_efficiency != null ? `${sm.avg_efficiency}%` : '—', label: 'Avg Efficiency', color: effColor(sm.avg_efficiency) })
+      e(StatTile, { value: hasUpgrades.length, label: 'Need Changes', color: 'var(--accent3)' }),
+      e(StatTile, { value: optimal.length, label: 'Optimal', color: 'var(--accent)' })
     ),
-    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 10 } }, 'Tap a column header to sort. Eff% = PF ÷ Max PF (points a perfect lineup would have scored).',
-      sm.worst_eff ? e('span', null, ` Lowest efficiency: `, e('b', null, sm.worst_eff), '.') : null),
-    e('div', { style: { overflowX: 'auto', WebkitOverflowScrolling: 'touch' } },
-      e('table', { style: { width: '100%', borderCollapse: 'collapse' } },
-        e('thead', null, e('tr', null, cols.map(th))),
-        e('tbody', null, rows.map(r => e('tr', { key: r.league },
-          td(e('div', null, e('div', { style: { fontWeight: 700, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' } }, r.league), e('div', { style: { fontSize: 10, color: 'var(--text3)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' } }, `${r.team}${r.rank ? ` · #${r.rank}/${r.total_teams}` : ''}`)), 'left', { whiteSpace: 'normal' }),
-          td(r.record, 'right', { fontWeight: 700, color: recColor(r.win_pct) }),
-          td(r.pf.toFixed(1), 'right'),
-          td(r.pa.toFixed(1), 'right'),
-          td(r.max_pf.toFixed(1), 'right', { color: 'var(--text2)' }),
-          td(r.efficiency != null ? `${r.efficiency}%` : '—', 'right', { fontWeight: 700, color: effColor(r.efficiency) })
-        )))
+    hasUpgrades.map(r => e(Card, { key: r.league, borderColor: 'var(--accent3)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.8rem', color: 'var(--accent3)', lineHeight: 1 } }, `+${r.gain?.toFixed(1)}`),
+          e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, 'floor pts gained')
+        )
+      ),
+      e(MovesList, { moves: r.moves, ptsKey: 'week_pts', subKey: 'ytd_avg', title: `🔄 ${r.moves.length} move${r.moves.length === 1 ? '' : 's'}` }),
+    )),
+    hasUpgrades.length > 0 && e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 10, lineHeight: 1.4 } },
+      data.weeks_completed > 0
+        ? 'Adj = floor × matchup. Floor is the lower of this week\'s projection and season average per game (projection only with 0 games). Matchup = points this week\'s opponent allows to that position vs the average defense: 🟢 8 easiest, 🔴 8 hardest.'
+        : 'No completed weeks yet — recommendations use week projections only.'),
+    optimal.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontWeight: 700 } }, `✅ Already Optimal (${optimal.length})`),
+      optimal.map(l => e('div', { key: l.league, style: { display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid var(--border)', fontSize: 12 } },
+        e('span', null, l.league),
+        e('span', { style: { color: 'var(--accent)', fontWeight: 700 } }, `${l.optimal_pts?.toFixed(1)} pts`)
+      ))
+    )
+  );
+}
+
+// ── STARTER UPGRADES VIEW ─────────────────────────────────────────────────────
+function StarterUpgradesView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
+  const needsWork = data.results.filter(r => r.upgrades?.length > 0);
+  const optimal = data.results.filter(r => r.optimal);
+
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: needsWork.length, label: 'Need Changes', color: 'var(--accent3)' }),
+      e(StatTile, { value: optimal.length, label: 'Optimal', color: 'var(--accent)' })
+    ),
+    needsWork.map(r => e(Card, { key: r.league, borderColor: 'var(--accent3)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' } },
+          e(Tag, { color: 'orange' }, `${r.upgrades.length} slot${r.upgrades.length > 1 ? 's' : ''} to upgrade`),
+          r.upgrades.some(u => u.zero_projection) && e(Tag, { color: 'red' }, `0️⃣ ${r.upgrades.filter(u => u.zero_projection).length} zero-pt`),
+          r.locked_count > 0 && e(Tag, { color: 'gray' }, `🔒 ${r.locked_count} played`)
+        )
+      ),
+      e(MovesList, { moves: r.moves, ptsKey: 'pts', title: '🔄 Roster Moves (no pickups needed)' }),
+      r.upgrades.some(u => u.fa_upgrades?.length || u.zero_projection) && e('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent4)', marginBottom: 6 } }, '🏷 Slot-By-Slot · Free Agent Options'),
+      r.upgrades.map((u, i) => e('div', { key: i, style: { marginBottom: 14 } },
+        e('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 6, flexWrap: 'wrap' } },
+          e('span', null, `${u.slot} · Currently: ${u.current_starter ? `${u.current_starter.name} (${u.current_starter.pts} pts)` : 'EMPTY'}`),
+          u.zero_projection && e(Tag, { color: 'red' }, '0 PTS PROJECTED')
+        ),
+        u.bench_upgrades.map(p => e('div', { key: p.id, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'rgba(0,229,160,0.06)', border: '1px solid rgba(0,229,160,0.3)', borderRadius: 8, marginBottom: 4 } },
+          e(PosBadge, { pos: p.position }),
+          e('div', { style: { flex: 1 } },
+            e('div', { style: { fontSize: 12, fontWeight: 700 } }, p.name),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${p.team} · Already on your roster`)
+          ),
+          e('div', { style: { textAlign: 'right' } },
+            e('div', { style: { fontSize: 13, fontWeight: 700, color: 'var(--accent)' } }, p.pts),
+            e('div', { style: { fontSize: 10, color: 'var(--accent)' } }, `+${(p.pts - (u.current_starter?.pts || 0)).toFixed(1)}`)
+          )
+        )),
+        u.fa_upgrades.map(p => e('div', { key: p.id, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'rgba(92,158,255,0.06)', border: '1px solid rgba(92,158,255,0.3)', borderRadius: 8, marginBottom: 4 } },
+          e(PosBadge, { pos: p.position }),
+          e('div', { style: { flex: 1 } },
+            e('div', { style: { fontSize: 12, fontWeight: 700 } }, p.name),
+            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${p.team} · Free Agent`)
+          ),
+          e('div', { style: { textAlign: 'right' } },
+            e('div', { style: { fontSize: 13, fontWeight: 700, color: 'var(--accent4)' } }, p.pts),
+            e('div', { style: { fontSize: 10, color: 'var(--accent4)' } }, `+${(p.pts - (u.current_starter?.pts || 0)).toFixed(1)}`)
+          )
+        ))
+      ))
+    )),
+    optimal.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontWeight: 700 } }, `✅ Optimal Lineups (${optimal.length})`),
+      optimal.map(l => e('div', { key: l.league, style: { fontSize: 12, padding: '4px 0', borderBottom: '1px solid var(--border)' } }, l.league))
+    )
+  );
+}
+
+// ── BENCH VS FA VIEW ──────────────────────────────────────────────────────────
+function BenchVsFaView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
+  const hasWork = data.results.filter(r => r.drops?.length || r.ir_moves?.length);
+  const fine = data.results.filter(r => r.optimal);
+  const sm = data.summary || {};
+  const STATUS = { bye: ['BYE', 'orange'], injured: ['OUT', 'red'] };
+  const side = (label, color, p, line) => e('div', null,
+    e('div', { style: { fontSize: 10, color, fontWeight: 800, marginBottom: 4 } }, label),
+    e('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+      e(PosBadge, { pos: p.position }),
+      e('div', { style: { minWidth: 0 } },
+        e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name),
+        e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, line))));
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.with_drops ?? hasWork.length, label: 'Leagues w/ Drops', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.drops ?? 0, label: 'Drops', color: 'var(--accent2)' }),
+      e(StatTile, { value: sm.ir_moves ?? 0, label: 'Move To IR', color: 'var(--accent4)' }),
+      e(StatTile, { value: fine.length, label: 'Roster Fine', color: 'var(--accent)' })),
+    hasWork.map(r => e(Card, { key: r.league, borderColor: r.drops.length ? 'var(--accent2)' : 'var(--accent4)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' } },
+          r.drops.length > 0 && e(Tag, { color: 'red' }, `${r.drops.length} drop${r.drops.length > 1 ? 's' : ''}`),
+          r.ir_moves.length > 0 && e(Tag, { color: 'blue' }, `${r.ir_moves.length} to IR`))),
+      r.drops.map((d, i) => e('div', { key: i, className: 'swap-card', style: { marginBottom: 6 } },
+        side('✂ DROP', 'var(--accent2)', d.drop,
+          d.drop.status === 'active' ? `${d.drop.team} · ${d.drop.pts} pts` : `${d.drop.team} · ${STATUS[d.drop.status][0]} · avg ${d.drop.avg}`),
+        e('div', { style: { textAlign: 'center' } },
+          e('div', { style: { fontSize: 13, fontWeight: 800, color: 'var(--accent)' } }, `+${d.gain}`),
+          e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, d.drop.basis === 'season avg' ? 'vs avg' : 'gain')),
+        side('➕ ADD', 'var(--accent)', d.add, `${d.add.team} · ${d.add.pts} pts`))),
+      r.ir_moves.length > 0 && e('div', { style: { marginTop: 6 } },
+        e('div', { style: { fontSize: 11, fontWeight: 800, color: 'var(--accent4)', marginBottom: 4 } },
+          `🏥 Move to IR instead of dropping${r.ir_open ? ` · ${r.ir_open} IR slot${r.ir_open > 1 ? 's' : ''} open` : ' · IR is full'}`),
+        r.ir_moves.map(p => e('div', { key: p.id, className: 'player-row' },
+          e(PosBadge, { pos: p.position }),
+          e('span', { className: 'player-name' }, p.name),
+          e('span', { className: 'player-team' }, p.team),
+          e(Tag, { color: 'red' }, (p.injury_status || '').toUpperCase()),
+          e('span', { className: 'player-pts' }, `avg ${p.avg}`))))
+    )),
+    fine.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontWeight: 700 } }, `✅ Roster Fine (${fine.length})`),
+      fine.map(l => e('div', { key: l.league, style: { fontSize: 13, padding: '5px 0', borderBottom: '1px solid var(--border)' } }, l.league))),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
+  );
+}
+
+// ── WAIVER WATCH VIEW ─────────────────────────────────────────────────────────
+function WaiverWatchView({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  const TREND = { rising: ['📈 Rising', 'var(--accent)'], fading: ['📉 Fading', 'var(--accent2)'], steady: ['➡ Steady', 'var(--text3)'] };
+  const candRow = (c, i, showLeague) => e('div', { key: c.id + i, style: { padding: '8px 10px', background: 'var(--surface2, var(--surface))', border: '1px solid var(--border)', borderRadius: 8, marginBottom: 6 } },
+    e('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+      e(PosBadge, { pos: c.position }),
+      e('div', { style: { flex: 1, minWidth: 0 } },
+        e('div', { style: { fontSize: 12, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, c.name,
+          c.under_radar && e('span', { style: { marginLeft: 6, fontSize: 9, color: 'var(--accent4)', fontWeight: 700 } }, 'UNDER RADAR')),
+        e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${c.team}${showLeague ? ` · ${c.league}` : ''} · proj ${c.proj} · avg ${c.avg}${c.std != null ? ` ±${c.std}` : ''} · last 2: ${c.recent} · ${c.gp} GP`)
+      ),
+      e('div', { style: { textAlign: 'right' } },
+        e('div', { style: { fontSize: 14, fontWeight: 800, color: 'var(--accent)' } }, `+${c.gain}`),
+        e('div', { style: { fontSize: 9, color: TREND[c.trend]?.[1] || 'var(--text3)' } }, TREND[c.trend]?.[0] || c.trend)
       )
     ),
-    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
-  );
-}
-
-// ── PLAYOFF ODDS VIEW ─────────────────────────────────────────────────────────
-function PlayoffOddsView({ data }) {
-  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No leagues still in the regular season.'));
-  const sm = data.summary || {};
-  const needsCard = r => (r.playoff_pct >= 10 && r.playoff_pct < 85) || (r.next_game && r.next_game.swing >= 20);
-  const focus = data.results.filter(needsCard);
-  const safe = data.results.filter(r => !needsCard(r) && r.playoff_pct >= 85);
-  const out = data.results.filter(r => !needsCard(r) && r.playoff_pct < 85);
-  const oneLiner = (r, extra) => e('div', { key: r.league, style: { display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, padding: '4px 0', borderBottom: '1px solid var(--border)' } },
-    e('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } }, r.league, r.team ? e('span', { style: { color: 'var(--text3)', fontSize: 10 } }, ` · ${r.team}`) : null),
-    e('span', { style: { whiteSpace: 'nowrap', color: 'var(--text3)' } }, `${r.record} · #${r.rank} · `, e('span', { style: { color: r.color, fontWeight: 700 } }, `${r.playoff_pct}%`), extra ? ` · ${extra}` : '')
+    e('div', { style: { fontSize: 10, color: 'var(--text2)', marginTop: 4 } },
+      `Replaces ${c.replaces?.name || 'empty slot'} at ${c.replaces?.slot} (floor ${c.replaces?.floor})`,
+      c.drop_candidate ? ` · Drop ${c.drop_candidate.name} (${c.drop_candidate.position}, avg ${c.drop_candidate.avg}, ${c.drop_candidate.gp} GP)` : '',
+      c.trending_adds > 0 ? ` · 🔥 ${c.trending_adds} adds/24h` : ''
+    )
   );
   return e('div', null,
     e('div', { className: 'stat-row' },
       e(StatTile, { value: sm.leagues ?? 0, label: 'Leagues', color: 'var(--text2)' }),
-      e(StatTile, { value: sm.clinched_or_safe ?? 0, label: 'Safe (≥85%)', color: 'var(--accent)' }),
-      e(StatTile, { value: sm.bubble ?? 0, label: 'Bubble', color: 'var(--accent3)' }),
-      e(StatTile, { value: sm.out ?? 0, label: 'Out (<10%)', color: 'var(--accent2)' })
+      e(StatTile, { value: sm.leagues_with_pickups ?? 0, label: 'With Pickups', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.total_candidates ?? 0, label: 'Candidates', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.under_radar ?? 0, label: 'Under Radar', color: 'var(--accent4)' })
     ),
-    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginBottom: 12 } },
-      `${focus.length} league${focus.length === 1 ? '' : 's'} where this week's decisions move the needle (bubble or must-win). Safe and eliminated leagues are listed at the bottom.`),
-    focus.map(r => {
-      const hist = Object.entries(r.wins_hist || {});
-      const maxH = Math.max(...hist.map(([, v]) => v), 1);
-      return e(Card, { key: r.league, borderColor: r.color },
-        e('div', { className: 'card-header' },
-          e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
-          e('div', { style: { textAlign: 'right' } },
-            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.6rem', color: r.color } }, `${r.playoff_pct}%`),
-            e('div', { style: { fontSize: 10, color: r.color, fontWeight: 700 } }, r.status)
-          )
-        ),
-        e('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 8 } },
-          `${r.record} · #${r.rank}/${r.total_teams} · ${r.playoff_spots} spots · ${r.games_left} left · exp. ${r.exp_wins} W · scoring ${r.my_mu} ± ${r.my_sd} (lg ${r.league_mu})${r.bye_pct > 0 ? ` · bye ${r.bye_pct}%` : ''}`),
-        r.next_game && e('div', { style: { padding: '8px 10px', background: r.next_game.swing >= 20 ? 'rgba(255,179,71,0.08)' : 'var(--surface2, var(--surface))', border: `1px solid ${r.next_game.swing >= 20 ? 'rgba(255,179,71,0.4)' : 'var(--border)'}`, borderRadius: 8, marginBottom: 8, fontSize: 11 } },
-          e('div', { style: { fontWeight: 700 } }, `${r.next_game.swing >= 20 ? '🔥 Must-win: ' : 'Next: '}Wk ${r.next_game.week} vs ${r.next_game.opp_name} (${r.next_game.win_prob}% to win)`),
-          e('div', { style: { color: 'var(--text2)', marginTop: 2 } }, `Playoffs ${r.next_game.playoff_if_win}% with a win · ${r.next_game.playoff_if_loss}% with a loss`)
-        ),
-        e('div', { style: { fontSize: 11, color: 'var(--text2)', padding: '6px 10px', borderLeft: `2px solid ${r.color}`, marginBottom: 8 } }, r.advice),
-        e('details', null,
-          e('summary', { style: { fontSize: 10, color: 'var(--text3)', cursor: 'pointer' } }, 'Wins distribution & league table'),
-          e('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 3, height: 44, margin: '8px 0' } },
-            hist.map(([w, pct]) => e('div', { key: w, style: { flex: 1, textAlign: 'center' } },
-              e('div', { style: { height: `${Math.max(2, (pct / maxH) * 32)}px`, background: r.color, opacity: 0.8, borderRadius: 2 } }),
-              e('div', { style: { fontSize: 9, color: 'var(--text3)', marginTop: 2 } }, w)
-            ))
-          ),
-          r.league_table?.map((t, i) => e('div', { key: i, style: { display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '3px 0', borderBottom: '1px solid var(--border)', color: t.team === r.team ? 'var(--accent)' : 'var(--text2)' } },
-            e('span', null, `${i + 1}. ${t.team}`), e('span', null, `${t.wins} W · ${t.playoff_pct}%`)
-          ))
+    sm.top?.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 8 } }, '🏆 Best Pickups Across All Leagues'),
+      sm.top.map((c, i) => candRow(c, i, true))
+    ),
+    data.results?.filter(r => r.candidates?.length).map(r => e(Card, { key: r.league, borderColor: 'var(--accent3)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.4rem', color: 'var(--accent)' } }, `+${r.best_gain}`),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${r.total_candidates} candidate${r.total_candidates === 1 ? '' : 's'}`)
         )
-      );
-    }),
-    safe.length > 0 && e(Card, { borderColor: 'var(--accent)' },
-      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 6 } }, `✅ Safe / clinched (${safe.length}) — bank FAAB`),
-      safe.map(r => oneLiner(r, r.bye_pct > 0 ? `bye ${r.bye_pct}%` : null))
-    ),
-    out.length > 0 && e(Card, { borderColor: 'var(--accent2)' },
-      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent2)', marginBottom: 6 } }, `🔨 Out of it (${out.length}) — sell mode`),
-      out.map(r => oneLiner(r, r.status))
-    ),
+      ),
+      r.candidates.map((c, i) => candRow(c, i, false))
+    )),
+    (() => { const none = data.results?.filter(r => !r.candidates?.length) || []; return none.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, color: 'var(--accent)', fontWeight: 700, marginBottom: 6 } }, `✅ Nothing worth grabbing (${none.length})`),
+      none.map(r => e('div', { key: r.league, style: { fontSize: 12, padding: '4px 0', borderBottom: '1px solid var(--border)' } }, r.league, r.team ? e('span', { style: { color: 'var(--text3)', fontSize: 10 } }, ` · ${r.team}`) : null))
+    ); })(),
     data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note)
   );
 }
 
-// ── SEASON FORECAST VIEW ──────────────────────────────────────────────────────
-function SeasonForecastView({ data }) {
-  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No data found.'));
+// ── RESULTS VIEWS ─────────────────────────────────────────────────────────────
+
+function AlertsView({ data, type }) {
+  if (!data || !data.results?.length) return e(Alert, { type: 'success', title: '✅ All Clear' }, e('p', null, 'No issues found across your leagues.'));
   return e('div', null,
-    e('div', { style: { fontFamily: 'Bebas Neue', letterSpacing: 2, color: 'var(--text2)', marginBottom: 12 } }, 'PROJECTED FINAL RECORDS'),
-    data.results.map(r => {
-      const projWinPct = r.proj_wins / Math.max(r.proj_wins + r.proj_losses, 1);
-      const barColor = projWinPct >= 0.6 ? 'var(--accent)' : projWinPct >= 0.45 ? 'var(--accent3)' : 'var(--accent2)';
-      return e('div', { key: r.league, style: { marginBottom: 12, padding: '12px 14px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${barColor}`, borderRadius: 10 } },
-        e('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: 6 } },
-          e('div', null,
-            e('div', { style: { fontWeight: 700, fontSize: 14 } }, r.league),
-            e('div', { style: { fontSize: 11, color: 'var(--text2)', marginTop: 2 } }, `${r.team ? r.team + ' · ' : ''}Current: ${r.current_record}`)
-          ),
-          e('div', { style: { textAlign: 'right' } },
-            e('div', { style: { fontFamily: 'Bebas Neue', fontSize: '1.4rem', color: barColor } }, r.projected_record),
-            e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, 'projected final')
-          )
-        ),
-        e('div', { className: 'bar-track', style: { height: 8 } },
-          e('div', { className: 'bar-fill', style: { width: `${projWinPct * 100}%`, background: barColor } })
-        ),
-        e('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text3)', marginTop: 4 } },
-          e('span', null, `${r.weeks_remaining} weeks remaining`),
-          e('span', null, `${r.my_proj_score} proj pts/wk`)
+    data.results.map(r => e(Card, { key: r.league, borderColor: 'var(--accent2)' },
+      e('div', { className: 'card-header' },
+        e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e(Tag, { color: 'red' }, `${(r.injured || r.questionable || r.on_bye || r.zero_starters || []).length} flagged`)
+      ),
+      (r.injured || r.questionable || r.on_bye || r.zero_starters || []).map(p =>
+        e('div', { key: p.id, className: 'player-row' },
+          p.slot && e('span', { style: { fontSize: 9, color: 'var(--text3)', minWidth: 52, textAlign: 'center' } }, p.slot),
+          e(PosBadge, { pos: p.position }),
+          e('span', { className: 'player-name' }, p.name),
+          e('span', { className: 'player-team' }, p.team),
+          e(Tag, { color: 'red' }, (p.status || '').toUpperCase())
         )
-      );
-    })
+      )
+    ))
   );
 }
 
-// ── TRADE DEADLINES VIEW ──────────────────────────────────────────────────────
-function TradeDeadlinesView({ data }) {
+// ── K / DEF LEAGUES VIEW ──────────────────────────────────────────────────────
+function KDefLeaguesView({ data }) {
   if (!data) return null;
   const sm = data.summary || {};
-  const fmtDate = d => { if (!d) return null; const x = new Date(d + 'T12:00:00'); return x.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }); };
-  const daysTo = d => { if (!d) return null; const t = new Date(d + 'T23:59:00'), n = new Date(); return Math.ceil((t - n) / 86400000); };
-  const recColor = p => p == null ? 'var(--text2)' : p > 0.5 ? 'var(--accent)' : p < 0.5 ? 'var(--accent2)' : 'var(--text2)';
-  const urgency = g => g.weeks_left === 0 ? 'var(--accent2)' : g.weeks_left === 1 ? 'var(--accent3)' : 'var(--accent4)';
-  const WIN = { Closing: 'var(--accent2)', 'Win now': 'var(--accent3)', Open: 'var(--accent4)', Rising: 'var(--accent)' };
-  const leagueRow = r => e('div', { key: r.league_id, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid var(--border)' } },
-    e('div', { style: { flex: 1, minWidth: 0 } },
-      e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
-      e('div', { style: { fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-        `${r.team} · #${r.rank}/${r.teams}${r.in_playoff_spot ? ' · playoff spot' : ''}`)),
-    e('div', { style: { textAlign: 'center', minWidth: 44 } },
-      e('div', { style: { fontSize: 14, fontWeight: 800, color: recColor(r.win_pct) } }, r.record),
-      e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'record')),
-    e('div', { style: { textAlign: 'right', minWidth: 52 } },
-      e('div', { style: { fontSize: 14, fontWeight: 800 } }, r.core_age != null ? r.core_age : '—'),
-      e('div', { style: { fontSize: 9, fontWeight: 700, color: WIN[r.window] || 'var(--text3)' } }, r.window ? `age · ${r.window}` : 'age')));
-  const nxt = sm.next;
+  const [filter, setFilter] = useState('all');
+  const rows = (data.results || []).filter(r => filter === 'all' || (filter === 'K' ? r.k_slots : filter === 'DEF' ? r.def_slots : r.issues));
+  const flagged = rows.filter(r => r.issues > 0), clean = rows.filter(r => !r.issues);
+  const btn = (id, label) => e('button', { key: id, onClick: () => setFilter(id), style: { flex: 1, padding: '8px 4px', fontSize: 12, fontWeight: 700, borderRadius: 8, border: `1px solid ${filter === id ? 'var(--accent)' : 'var(--border)'}`, background: filter === id ? 'var(--surface2)' : 'transparent', color: filter === id ? 'var(--text)' : 'var(--text3)' } }, label);
+  const slotRow = (x, i) => e('div', { key: i, style: { padding: '8px 0', borderBottom: '1px solid var(--border)' } },
+    e('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+      e(PosBadge, { pos: x.slot }),
+      e('span', { style: { fontSize: 14, fontWeight: 700, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, x.name || 'Empty slot'),
+      x.issue && e(Tag, { color: 'red' }, x.issue),
+      x.name && e('span', { style: { fontSize: 14, fontWeight: 700, color: x.proj > 0 ? 'var(--text)' : 'var(--accent2)' } }, x.proj)),
+    e('div', { style: { fontSize: 11, color: 'var(--text3)', marginTop: 2 } },
+      `${x.team || ''}${x.team ? ' · ' : ''}${x.rostered_at_pos} ${x.slot} rostered`,
+      x.backup ? ` · backup ${x.backup.name} (${x.backup.proj})` : x.issue ? ' · no backup — check waivers' : ''));
+  const card = r => e(Card, { key: r.league, borderColor: r.issues ? 'var(--accent2)' : 'var(--accent)' },
+    e('div', { className: 'card-header' },
+      e('div', null, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+      e('div', { style: { fontSize: 11, color: 'var(--text3)', textAlign: 'right' } }, [r.k_slots ? `${r.k_slots} K` : null, r.def_slots ? `${r.def_slots} DEF` : null].filter(Boolean).join(' · '))),
+    r.slots.map(slotRow));
   return e('div', null,
     e('div', { className: 'stat-row' },
-      e(StatTile, { value: sm.this_week ?? 0, label: 'Close This Week', color: 'var(--accent2)' }),
-      e(StatTile, { value: sm.open ?? 0, label: 'Still Open', color: 'var(--accent4)' }),
-      e(StatTile, { value: sm.no_deadline ?? 0, label: 'No Deadline', color: 'var(--accent)' }),
-      e(StatTile, { value: sm.passed ?? 0, label: 'Passed', color: 'var(--text3)' })),
-    nxt && e('div', { style: { fontSize: 13, color: 'var(--text2)', marginBottom: 12 } },
-      'Next: ', e('b', null, `${nxt.leagues.length} league${nxt.leagues.length === 1 ? '' : 's'} at week ${nxt.deadline_week}`),
-      nxt.closes_after ? ` — closes after ${fmtDate(nxt.closes_after)}${daysTo(nxt.closes_after) != null && daysTo(nxt.closes_after) >= 0 ? ` (${daysTo(nxt.closes_after) === 0 ? 'today' : `in ${daysTo(nxt.closes_after)} day${daysTo(nxt.closes_after) === 1 ? '' : 's'}`})` : ''}` : ''),
-    (data.groups || []).map(g => e(Card, { key: g.deadline_week, borderColor: urgency(g) },
-      e('div', { className: 'card-header', style: { marginBottom: 4 } },
-        e('div', null,
-          e('div', { className: 'card-title' }, `Week ${g.deadline_week} deadline`),
-          e('div', { className: 'card-subtitle' }, g.closes_after ? `Closes after the last week-${g.deadline_week} game · ${fmtDate(g.closes_after)}` : `Closes after the last week-${g.deadline_week} game`)),
-        e('div', { style: { textAlign: 'right' } },
-          e('div', { style: { fontSize: 13, fontWeight: 800, color: urgency(g), whiteSpace: 'nowrap' } },
-            g.weeks_left === 0 ? 'THIS WEEK' : `${g.weeks_left} wk${g.weeks_left === 1 ? '' : 's'}`),
-          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${g.leagues.length} league${g.leagues.length === 1 ? '' : 's'}`))),
-      g.leagues.map(leagueRow))),
-    !(data.groups || []).length && e(Alert, { type: 'info' }, e('p', null, 'No upcoming trade deadlines.')),
-    data.no_deadline?.length > 0 && e('details', { className: 'card', style: { borderLeft: '3px solid var(--accent)' } },
-      e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--accent)' } }, `♾️ No trade deadline (${data.no_deadline.length})`),
-      data.no_deadline.map(leagueRow)),
-    data.passed?.length > 0 && e('details', { className: 'card', style: { borderLeft: '3px solid var(--text3)' } },
-      e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--text3)' } }, `🔒 Deadline passed (${data.passed.length})`),
-      data.passed.map(r => e('div', { key: r.league_id, style: { display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, padding: '6px 0', borderBottom: '1px solid var(--border)', color: 'var(--text2)' } },
-        e('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
-        e('span', { style: { whiteSpace: 'nowrap' } }, `week ${r.deadline_week} · ${r.record}${r.core_age != null ? ` · age ${r.core_age}` : ''}`)))),
-    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
+      e(StatTile, { value: sm.with_k_or_def ?? 0, label: `K/DEF Leagues (of ${sm.leagues})`, color: 'var(--text)' }),
+      e(StatTile, { value: sm.with_k ?? 0, label: 'Start a K', color: 'var(--accent4)' }),
+      e(StatTile, { value: sm.with_def ?? 0, label: 'Start a DEF', color: 'var(--accent4)' }),
+      e(StatTile, { value: sm.issues ?? 0, label: 'Slots Flagged', color: 'var(--accent2)' })),
+    e('div', { style: { display: 'flex', gap: 6, marginBottom: 12 } }, btn('all', 'All'), btn('K', 'K'), btn('DEF', 'DEF'), btn('issues', '⚠️ Flagged')),
+    flagged.map(card),
+    clean.length > 0 && e(Card, { borderColor: 'var(--accent)' },
+      e('div', { style: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 6 } }, `✅ Set (${clean.length})`),
+      clean.map(r => e('div', { key: r.league, style: { padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 12 } },
+        e('div', { style: { fontWeight: 700 } }, r.league, e('span', { style: { color: 'var(--text3)', fontWeight: 400, fontSize: 10 } }, r.team ? ` · ${r.team}` : '')),
+        e('div', { style: { color: 'var(--text2)', fontSize: 11 } }, r.slots.map(x => `${x.slot}: ${x.name} (${x.proj})`).join(' · '))))),
+    !rows.length && e(Alert, { type: 'info' }, e('p', null, 'No leagues match this filter.')),
+    data.neither?.length > 0 && e('details', { style: { marginTop: 8 } },
+      e('summary', { style: { fontSize: 11, color: 'var(--text3)', cursor: 'pointer' } }, `${data.neither.length} league${data.neither.length === 1 ? '' : 's'} with no K or DEF slot`),
+      e('div', { style: { fontSize: 11, color: 'var(--text2)', lineHeight: 1.6, marginTop: 4 } }, data.neither.join(' · '))));
 }
 
-// ── RECENT TRADES VIEW ────────────────────────────────────────────────────────
-function RecentTradesView({ data }) {
-  const [q, setQ] = useState('');
-  const [mineOnly, setMineOnly] = useState(false);
-  if (!data) return null;
-  const sm = data.summary || {};
-  const ql = q.trim().toLowerCase();
-  const fmt = ms => ms ? new Date(ms).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) : '';
-  const hit = t => !ql || t.sides.some(s => s.team.toLowerCase().includes(ql) || s.players.some(p => p.name.toLowerCase().includes(ql)));
-  const leagues = (data.results || []).map(l => ({ ...l, shown: l.trades.filter(t => (!mineOnly || t.mine) && hit(t)) })).filter(l => l.shown.length);
-  const pill = (on, label, onClick) => e('button', { onClick, style: { flex: 1, padding: '7px 4px', fontSize: 12, fontWeight: 700, borderRadius: 8, border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--surface2)' : 'transparent', color: on ? 'var(--text)' : 'var(--text3)' } }, label);
-  const asset = (key, left, main, sub, color) => e('div', { key, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' } },
-    left, e('div', { style: { flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: color || 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, main,
-      sub ? e('span', { style: { fontSize: 11, fontWeight: 400, color: 'var(--text3)', marginLeft: 6 } }, sub) : null));
-  const sideBlock = (t, s, i) => {
-    const other = t.sides.filter(x => x !== s);
-    const label = s.is_me ? 'YOU GOT' : (t.mine && t.teams === 2) ? `YOU GAVE → ${s.team}` : `${s.team} got`;
-    const col = s.is_me ? 'var(--accent)' : (t.mine && t.teams === 2) ? 'var(--accent2)' : 'var(--text2)';
-    const items = [
-      ...s.players.map(p => asset(p.id, e(PosBadge, { pos: p.position || '—' }), p.name, `${p.team}${p.age ? ` · ${p.age}` : ''}`)),
-      ...s.picks.map((pk, j) => asset('pk' + j, e('span', { className: 'pos', style: { background: 'var(--surface2)', color: 'var(--purple)' } }, 'PK'),
-        `${pk.label} round pick`, pk.from ? `(${pk.original_is_mine ? 'your' : `${pk.from}’s`})` : '(own)', 'var(--purple)')),
-      ...(s.faab ? [asset('faab', e('span', { className: 'pos', style: { background: 'var(--surface2)', color: 'var(--accent3)' } }, '$'), `$${s.faab} FAAB`, null, 'var(--accent3)')] : []),
-    ];
-    return e('div', { key: s.roster_id, style: { padding: '6px 0', borderTop: i ? '1px solid var(--border)' : 'none' } },
-      e('div', { style: { fontSize: 11, fontWeight: 800, letterSpacing: 0.4, color: col, marginBottom: 2, textTransform: s.is_me || (t.mine && t.teams === 2) ? 'none' : 'none' } }, label),
-      items.length ? items : e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, 'Nothing'));
-  };
-  const tradeCard = t => e('div', { key: t.id, style: {
-      background: t.mine ? 'rgba(0,229,160,0.08)' : 'var(--surface)', border: `1px solid ${t.mine ? 'var(--accent)' : 'var(--border)'}`,
-      borderLeft: `${t.mine ? 5 : 1}px solid ${t.mine ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 10, padding: '8px 12px', marginBottom: 8 } },
-    e('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 2 } },
-      t.mine ? e('span', { style: { fontSize: 11, fontWeight: 800, color: '#0d0f14', background: 'var(--accent)', borderRadius: 6, padding: '2px 7px' } }, '⭐ YOUR TRADE')
-             : e('span', { style: { fontSize: 11, color: 'var(--text3)' } }, t.teams > 2 ? `${t.teams}-team trade` : t.sides.map(s => s.team).join(' ⇄ ')),
-      e('span', { style: { fontSize: 11, color: 'var(--text3)', whiteSpace: 'nowrap' } }, `${fmt(t.created)} · wk ${t.week}`)),
-    // your trade: show "you got" then "you gave"; others: each team's haul
-    t.sides.map((s, i) => sideBlock(t, s, i)));
-  return e('div', null,
-    e('div', { className: 'stat-row' },
-      e(StatTile, { value: sm.mine ?? 0, label: 'Your Trades', color: 'var(--accent)' }),
-      e(StatTile, { value: sm.trades ?? 0, label: 'All Trades', color: 'var(--text)' }),
-      e(StatTile, { value: sm.leagues_with_trades ?? 0, label: 'Leagues w/ Trades', color: 'var(--accent4)' }),
-      e(StatTile, { value: sm.leagues_quiet ?? 0, label: 'No Trades', color: 'var(--text3)' })),
-    e('input', { className: 'field', style: { width: '100%', marginBottom: 8 }, placeholder: 'Search a player or team', value: q, onChange: ev => setQ(ev.target.value) }),
-    e('div', { style: { display: 'flex', gap: 6, marginBottom: 12 } },
-      pill(!mineOnly, `All trades (${sm.trades ?? 0})`, () => setMineOnly(false)), pill(mineOnly, `⭐ Mine (${sm.mine ?? 0})`, () => setMineOnly(true))),
-    leagues.map(l => e(Card, { key: l.league_id, borderColor: l.mine ? 'var(--accent)' : 'var(--border)' },
-      e('div', { className: 'card-header', style: { marginBottom: 6 } },
-        e('div', { style: { minWidth: 0 } },
-          e('div', { className: 'card-title', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, l.league),
-          e('div', { className: 'card-subtitle' }, l.my_team)),
-        e('div', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
-          l.mine ? e('div', { style: { fontSize: 12, fontWeight: 800, color: 'var(--accent)' } }, `⭐ ${l.mine} yours`) : null,
-          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${l.trades.length} trade${l.trades.length === 1 ? '' : 's'}`))),
-      l.shown.map(tradeCard))),
-    !leagues.length && e(Alert, { type: 'info' }, e('p', null, mineOnly ? 'You haven’t made any trades in these weeks.' : ql ? 'No trades match that search.' : 'No trades in these weeks.')),
-    data.quiet?.length > 0 && !mineOnly && !ql && e('details', { className: 'card', style: { borderLeft: '3px solid var(--text3)' } },
-      e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--text3)' } }, `💤 No trades (${data.quiet.length} league${data.quiet.length === 1 ? '' : 's'})`),
-      data.quiet.map(r => e('div', { key: r.league_id, style: { fontSize: 12, padding: '6px 0', borderBottom: '1px solid var(--border)', color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league))),
-    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
-}
-
-// ── PLAYOFF CALENDAR VIEW ─────────────────────────────────────────────────────
-function PlayoffCalendarView({ data }) {
-  if (!data?.groups?.length) return e(Alert, { type: 'info' }, e('p', null, 'No leagues found.'));
-  const sm = data.summary || {};
-  const fmt = d => d ? new Date(d + 'T12:00:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) : null;
-  const S = { IN: ['var(--accent)', '✅'], OUT: ['var(--accent3)', '⛔'], ALIVE: ['var(--accent)', '🟢'], CHAMPION: ['var(--accent)', '🏆'],
-              FINISHED: ['var(--accent4)', '🏅'], ELIMINATED: ['var(--accent2)', '❌'], MISSED: ['var(--accent2)', '❌'], CONSOLATION: ['var(--text3)', '🥉'] };
-  const row = r => {
-    const [c, icon] = S[r.standing.code] || ['var(--text2)', ''];
-    return e('div', { key: r.league_id, style: { padding: '9px 0', borderBottom: '1px solid var(--border)' } },
-      e('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
-        e('div', { style: { flex: 1, minWidth: 0 } },
-          e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.league),
-          e('div', { style: { fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-            `${r.team} · ${r.record} · ${r.playoff_teams} make it${r.byes ? `, ${r.byes} bye${r.byes > 1 ? 's' : ''}` : ''}`)),
-        e('div', { style: { textAlign: 'right', maxWidth: '48%' } },
-          e('div', { style: { fontSize: 13, fontWeight: 800, color: c } }, `${icon} ${r.standing.text}`))),
-      e('div', { style: { fontSize: 11, color: 'var(--text2)', marginTop: 3 } },
-        `Final week ${r.championship_week}${r.two_week_final ? ' (2-week final)' : r.two_week_rounds ? ' (2-week rounds)' : ''}`));
-  };
-  return e('div', null,
-    e('div', { className: 'stat-row' },
-      e(StatTile, { value: sm.in ?? 0, label: 'In A Spot Now', color: 'var(--accent)' }),
-      e(StatTile, { value: sm.out ?? 0, label: 'Out Right Now', color: 'var(--accent3)' }),
-      e(StatTile, { value: sm.alive ?? 0, label: 'Alive In Playoffs', color: 'var(--accent4)' }),
-      e(StatTile, { value: sm.champion ?? 0, label: 'Titles', color: 'var(--accent)' })),
-    e('div', { style: { fontSize: 12, color: 'var(--text3)', marginBottom: 12 } }, `NFL week ${data.current_week}. Grouped by when each league's playoffs start.`),
-    data.groups.map((g, i) => g.complete
-      ? e('details', { key: 'done', className: 'card', style: { borderLeft: '3px solid var(--text3)' } },
-          e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--text3)' } }, `🏁 Season complete (${g.leagues.length})`),
-          g.leagues.map(row))
-      : e(Card, { key: i, borderColor: g.weeks_to_playoffs === 0 ? 'var(--accent)' : g.weeks_to_playoffs <= 1 ? 'var(--accent3)' : 'var(--accent4)' },
-          e('div', { className: 'card-header', style: { marginBottom: 6 } },
-            e('div', null,
-              e('div', { className: 'card-title' }, `Playoffs start week ${g.playoff_start}${g.playoff_start_date ? ` · ${fmt(g.playoff_start_date)}` : ''}`),
-              e('div', { className: 'card-subtitle' }, `Regular season ends week ${g.regular_season_end}${g.regular_season_end_date ? ` · ${fmt(g.regular_season_end_date)}` : ''}`)),
-            e('div', { style: { fontSize: 13, fontWeight: 800, whiteSpace: 'nowrap', color: g.weeks_to_playoffs === 0 ? 'var(--accent)' : g.weeks_to_playoffs <= 1 ? 'var(--accent3)' : 'var(--accent4)' } },
-              g.weeks_to_playoffs === 0 ? 'UNDER WAY' : g.weeks_to_playoffs === 1 ? 'FINAL WEEK' : `${g.weeks_to_playoffs} wks away`)),
-          g.leagues.map(row))),
-    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
-}
-
-// ── LEAGUES TAB LIST ─────────────────────────────────────────────────────
-FF.tab({ id: 'leagues', label: 'Leagues', icon: '📋', groups: [
-  { label: 'Your leagues', features: [
-    { id: 'league-sheet', title: 'League Sheet', sub: 'Lineup format, record, projection, needs', icon: '📋', tint: 'blue',
-      endpoint: '/analysis/league-sheet', view: LeagueSheetView, badge: d => d.summary && cnt(d.summary.critical, 'red') },
-    { id: 'playoff-calendar', title: 'Playoff Calendar', sub: 'Season end, playoff start, and where you stand', icon: '🗓️', tint: 'green',
-      endpoint: '/analysis/playoff-calendar', view: PlayoffCalendarView },
-    { id: 'trade-deadlines', title: 'Trade Deadlines', sub: 'Every league’s deadline, soonest first', icon: '⏰', tint: 'red',
-      endpoint: '/analysis/trade-deadlines', view: TradeDeadlinesView, badge: d => d.summary && cnt(d.summary.this_week, 'red') },
-    { id: 'recent-trades', title: 'Recent Trades', sub: 'Every trade in your leagues, last 2 weeks — yours highlighted', icon: '🔁', tint: 'green',
-      endpoint: '/analysis/recent-trades', view: RecentTradesView, badge: d => d.summary && cnt(d.summary.mine, 'green') },
-    { id: 'season-records', title: 'Season Records', sub: 'Record, PF, PA and max PF', icon: '📒', tint: 'green',
-      endpoint: '/analysis/season-records', view: SeasonRecordsView },
+// ── LINEUPS TAB LIST ─────────────────────────────────────────────────────
+FF.tab({ id: 'lineups', label: 'Lineups', icon: '⚡', groups: [
+  { label: 'Set your lineups', features: [
+    { id: 'optimal', title: 'Optimal Lineup', sub: 'Bench, free agent and taxi upgrades', icon: '⚡', tint: 'green',
+      endpoint: '/analysis/optimal-lineup', view: OptimalLineupView, badge: d => cnt((d.results || []).length, 'orange') },
+    { id: 'upgrade', title: 'Upgrade Recs', sub: 'Ranked on floor (projection vs average)', icon: '🔼', tint: 'blue',
+      endpoint: '/analysis/upgrade-recommendations', view: UpgradeRecsView,
+      badge: d => cnt((d.results || []).filter(r => r.moves && r.moves.length).length, 'orange') },
+    { id: 'starter-upgrades', title: 'Starter Upgrades', sub: 'Slot by slot: bench and free agents', icon: '⬆️', tint: 'blue',
+      endpoint: '/analysis/starter-upgrades', view: StarterUpgradesView },
+    { id: 'bench-vs-fa', title: 'Bench vs FA', sub: 'Free agents better than your bench', icon: '🔄', tint: 'purple',
+      endpoint: '/analysis/bench-vs-fa', view: BenchVsFaView },
+    { id: 'waiver-watch', title: 'Waiver Watch', sub: 'Free agents beating your starters', icon: '👀', tint: 'purple',
+      endpoint: '/analysis/waiver-watch', view: WaiverWatchView, badge: d => d.summary && cnt(d.summary.leagues_with_pickups, 'green') },
   ]},
-  { label: 'Predictions', features: [
-    { id: 'playoff-odds', title: 'Playoff Odds', sub: 'Simulated odds and must-win games', icon: '🎰', tint: 'orange',
-      endpoint: '/analysis/playoff-odds', view: PlayoffOddsView, badge: d => d.summary && cnt(d.summary.bubble, 'orange') },
-    { id: 'season-forecast', title: 'Season Forecast', sub: 'Projected final records', icon: '📈', tint: 'purple',
-      endpoint: '/analysis/season-forecast', view: SeasonForecastView },
+  { label: 'Problems to fix', features: [
+    { id: 'injured', title: 'OUT / IR / Doubtful', sub: 'Starters who won’t (or likely won’t) play', icon: '🚨', tint: 'red',
+      endpoint: '/alerts/injured-starters', view: AlertsView, viewProps: { type: 'injured' }, badge: d => cnt((d.results || []).length, 'red') },
+    { id: 'questionable', title: 'Questionable', sub: 'Questionable starters (game-time decisions)', icon: '⚠️', tint: 'orange',
+      endpoint: '/alerts/questionable-starters', view: AlertsView, viewProps: { type: 'questionable' }, badge: d => cnt((d.results || []).length, 'orange') },
+    { id: 'bye', title: 'Starters on Bye', sub: 'Byes still in a lineup', icon: '📅', tint: 'red',
+      endpoint: '/alerts/starters-on-bye', view: AlertsView, viewProps: { type: 'bye' }, badge: d => cnt((d.results || []).length, 'red') },
+    { id: 'open', title: 'Open Spots', sub: 'Empty starting slots', icon: '⭕', tint: 'red',
+      endpoint: '/alerts/open-starter-spots', view: AlertsView, viewProps: { type: 'open' }, badge: d => cnt((d.results || []).length, 'red') },
+    { id: 'zero-proj', title: 'Zero-Point Starters', sub: 'Starters projected for nothing', icon: '0️⃣', tint: 'orange',
+      endpoint: '/alerts/zero-projection-starters', view: AlertsView, viewProps: { type: 'zero-proj' }, badge: d => cnt((d.results || []).length, 'orange') },
+    { id: 'k-def', title: 'K / DEF Leagues', sub: 'Kicker and defense slots, flagged', icon: '🦵', tint: 'blue',
+      endpoint: '/analysis/k-def-leagues', view: KDefLeaguesView, badge: d => d.summary && cnt(d.summary.issues, 'red') },
   ]},
 ]});

@@ -209,6 +209,10 @@ async def get_game_clock() -> dict:
     out = {}
     try:
         data = await _get("https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard")
+        # which week the scoreboard is on (it can still show last week's finals on Mon/Tue)
+        wk = (data.get("week") or {}).get("number")
+        stype = (data.get("season") or {}).get("type")
+        out["_week"] = int(wk) if wk and stype in (2, None) else None
         for ev in data.get("events", []) or []:
             comp = (ev.get("competitions") or [{}])[0]
             stt = comp.get("status") or ev.get("status") or {}
@@ -225,7 +229,8 @@ async def get_game_clock() -> dict:
                 ab = ((c.get("team") or {}).get("abbreviation") or "").upper()
                 if ab:
                     out[ESPN_TO_SLEEPER.get(ab, ab)] = {"state": state, "played": round(played, 3),
-                                                        "period": period, "clock": stt.get("displayClock")}
+                                                        "period": period, "clock": stt.get("displayClock"),
+                                                        "kickoff": ev.get("date")}
     except Exception:
         out = {}
     return set_cached(clock_cache, "now", out)

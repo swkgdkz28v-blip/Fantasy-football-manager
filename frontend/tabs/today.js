@@ -426,6 +426,59 @@ function WeekReviewView({ data }) {
 }
 
 // ── TODAY TAB LIST ───────────────────────────────────────────────────────
+// ── CLOSEST GAMES VIEW ────────────────────────────────────────────────────────
+function ClosestGamesView({ data }) {
+  const [filter, setFilter] = useState('all');
+  if (!data?.games?.length) return e(Alert, { type: 'info' }, e('p', null, 'No matchups found for this week.'));
+  const sm = data.summary || {};
+  const BANDS = [[5, 'Nail-biters · under 5'], [10, 'Close · 5–10'], [20, 'Comfortable · 10–20'], [40, 'Clear · 20–40'], [Infinity, 'Blowouts · 40+']];
+  const F = { all: () => true, w: g => g.diff > 0, l: g => g.diff < 0, live: g => !g.final };
+  const games = data.games.filter(g => g.started).filter(F[filter]);
+  const unstarted = data.games.filter(g => !g.started);
+  const col = g => g.diff > 0 ? 'var(--accent)' : g.diff < 0 ? 'var(--accent2)' : 'var(--text2)';
+  const left = x => x.live + x.pre ? `${x.live ? `${x.live} playing` : ''}${x.live && x.pre ? ' · ' : ''}${x.pre ? `${x.pre} to play` : ''}` : 'done';
+  const pill = (on, label, onClick) => e('button', { onClick, style: { flex: 1, padding: '7px 4px', fontSize: 12, fontWeight: 700, borderRadius: 8, border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--surface2)' : 'transparent', color: on ? 'var(--text)' : 'var(--text3)' } }, label);
+  const row = (g, rank) => e('div', { key: g.league_id, style: { background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `4px solid ${col(g)}`, borderRadius: 10, padding: '9px 12px', marginBottom: 6 } },
+    e('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline' } },
+      e('div', { style: { fontSize: 13, fontWeight: 700, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+        e('span', { style: { color: 'var(--text3)', marginRight: 6 } }, `#${rank}`), g.league),
+      e('div', { style: { fontSize: 12, fontWeight: 800, color: col(g), whiteSpace: 'nowrap' } },
+        `${g.final ? g.result : (g.diff > 0 ? '▲ ' : g.diff < 0 ? '▼ ' : '')}${g.final ? ' ' : ''}by ${g.margin.toFixed(2)}`,
+        !g.final ? e('span', { style: { fontSize: 9, color: 'var(--accent4)', marginLeft: 5 } }, 'LIVE') : null)),
+    e('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 5 } },
+      e('div', { style: { flex: 1, minWidth: 0 } },
+        e('div', { style: { fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, g.my_team),
+        e('div', { style: { fontSize: 18, fontWeight: 800, color: g.diff >= 0 ? 'var(--text)' : 'var(--text2)' } }, g.my_points.toFixed(2)),
+        !g.final ? e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, left(g.my_left)) : null),
+      e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, 'vs'),
+      e('div', { style: { flex: 1, minWidth: 0, textAlign: 'right' } },
+        e('div', { style: { fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, g.opponent),
+        e('div', { style: { fontSize: 18, fontWeight: 800, color: g.diff <= 0 ? 'var(--text)' : 'var(--text2)' } }, g.opp_points.toFixed(2)),
+        !g.final ? e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, left(g.opp_left)) : null)));
+  let lo = 0, rank = 0; const out = [];
+  BANDS.forEach(([hi, label]) => {
+    const band = games.filter(g => g.margin >= lo && g.margin < hi); lo = hi;
+    if (!band.length) return;
+    out.push(e('div', { key: label, className: 'sec-title', style: { fontSize: 12, fontWeight: 800, color: 'var(--text3)', margin: '12px 0 6px', textTransform: 'uppercase', letterSpacing: 0.5 } }, `${label} (${band.length})`));
+    band.forEach(g => out.push(row(g, ++rank)));
+  });
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.within_5 ?? 0, label: 'Within 5 pts', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.within_10 ?? 0, label: 'Within 10 pts', color: 'var(--accent4)' }),
+      e(StatTile, { value: `${sm.wins}-${sm.losses}${sm.ties ? `-${sm.ties}` : ''}`, label: sm.in_progress ? `Final so far · ${sm.in_progress} live` : 'Week record', color: 'var(--text)' }),
+      e(StatTile, { value: sm.blowouts ?? 0, label: 'Blowouts (40+)', color: 'var(--text3)' })),
+    e('div', { style: { display: 'flex', gap: 6, marginBottom: 6 } },
+      pill(filter === 'all', `All (${data.games.length})`, () => setFilter('all')),
+      pill(filter === 'w', 'Ahead / Won', () => setFilter('w')), pill(filter === 'l', 'Behind / Lost', () => setFilter('l')),
+      sm.in_progress ? pill(filter === 'live', `Live (${sm.in_progress})`, () => setFilter('live')) : null),
+    out.length ? out : e(Alert, { type: 'info' }, e('p', null, unstarted.length === data.games.length ? 'No points scored yet this week.' : 'No games match this filter.')),
+    unstarted.length > 0 && filter !== 'w' && filter !== 'l' && e('details', { className: 'card', style: { borderLeft: '3px solid var(--text3)' } },
+      e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--text3)' } }, `⏳ Not started yet (${unstarted.length})`),
+      unstarted.map(g => e('div', { key: g.league_id, style: { fontSize: 12, padding: '6px 0', borderBottom: '1px solid var(--border)', color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `${g.league} · vs ${g.opponent}`))),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
+}
+
 FF.tab({ id: 'today', label: 'Today', icon: '☀️', groups: [
   { label: 'Start here', features: [
     { id: 'weekly-digest', title: 'Weekly Digest', sub: 'Every league’s to-do list, most urgent first', icon: '☀️', tint: 'orange',
@@ -443,6 +496,8 @@ FF.tab({ id: 'today', label: 'Today', icon: '☀️', groups: [
   { label: 'This week', features: [
     { id: 'week-record', title: 'Week Record', sub: 'Projected vs expected vs final record', icon: '🎯', tint: 'green',
       endpoint: '/analysis/week-record', view: WeekRecordView },
+    { id: 'closest-games', title: 'Closest Games', sub: 'Your matchups, closest score to biggest blowout', icon: '📏', tint: 'orange',
+      endpoint: '/analysis/closest-games', view: ClosestGamesView, badge: d => d.summary && cnt(d.summary.within_5, 'orange') },
     { id: 'week-analysis', title: 'Week Analysis', sub: 'Matchup by matchup breakdown', icon: '📊', tint: 'blue',
       endpoint: '/analysis/week', view: WeekAnalysisView },
     { id: 'week-review', title: 'Week Review', sub: 'Hindsight lineup, under/over-achievers', icon: '📝', tint: 'purple',

@@ -2768,6 +2768,38 @@ def _clinch_math(me, team_ids, wins, spots, games_left, name_of, in_spot=None):
     return {"code": "elim", "number": fmt(my_w + games_left - wins[target] + 1), "vs": name_of(target), "games_left": games_left}
 
 
+def _expected_points(starters, pts_map, proj_map, state_fn, players_db, stats_map, clock):
+    """Most recent projection for one lineup, same rules as Week Record: finished players count their actual
+    points, players in a game count points so far + projection × share of the game left, the rest their projection.
+    Returns (expected, actual_so_far, players_live, players_to_play)."""
+    exp = act = 0.0
+    live = pre = 0
+    for pid in starters or []:
+        pid = str(pid)
+        if not pid or pid == "0":
+            continue
+        p = players_db.get(pid) or {}
+        proj = float(proj_map.get(pid, 0) or 0)
+        actual = float(pts_map.get(pid, 0) or 0)
+        st = state_fn(pid, p.get("team"), actual)
+        act += actual
+        if st == "final":
+            exp += actual
+        elif st == "live":
+            live += 1
+            c = (clock or {}).get(p.get("team"))
+            frac = c.get("played") if c and c.get("state") == "in" else None
+            if frac is None:
+                snaps = (stats_map.get(pid) or {}).get("tm_off_snp") or 0
+                frac = min(max(snaps / 64.0, 0.05), 0.97) if snaps else None
+            left = min(max(proj - actual, 0.0), proj * 0.5) if frac is None else max(proj * (1 - frac), 0.0)
+            exp += actual + left
+        else:
+            pre += 1
+            exp += proj
+    return round(exp, 2), round(act, 2), live, pre
+
+
 @router.post("/analysis/playoff-odds")
 async def get_playoff_odds(req: UserRequest, only_league_id: Optional[str] = None):
     """Monte Carlo playoff odds per league using each team's actual scoring mean ± sd and the real remaining schedule.
@@ -2776,7 +2808,11 @@ async def get_playoff_odds(req: UserRequest, only_league_id: Optional[str] = Non
     user_id = user["user_id"]
     week = req.week or current_week
     SIMS = 1500
-    proj_array = await get_projections(season, week)
+    proj_array, stats_array, nfl_sched, clock = await asyncio.gather(
+        get_projections(season, week), get_stats(season, week), get_schedule(season, week),
+        get_game_clock() if week >= current_week else _none())
+    stats_map = build_stats_map(stats_array)
+    state_fn, clock = _game_state_fn(week, week < current_week, nfl_sched, clock, stats_map, players_db)
 
     results = []
     for league in leagues:
@@ -2899,6 +2935,70 @@ async def get_playoff_odds(req: UserRequest, only_league_id: Optional[str] = Non
                               lambda rid: team_name(next(x for x in rosters if x["roster_id"] == rid)), rank_now <= playoff_spots)
         others = sorted([(sim[r]["playoff_pct"], team_name(next(x for x in rosters if x["roster_id"] == r)), base_wins[r]) for r in team_ids], key=lambda t: -t[0])
 
+        # This week's matchup on the most recent projection (actual points for finished players, live-updated
+        # for players in a game), then the standings if every game this week ends that way → projected seed.
+        this_week = None
+        wk_m = future[0] if future and future_weeks and future_weeks[0] == week and week == current_week else None
+        # Sleeper adds a finished week to the standings on Tuesday; if that has already happened, don't add it twice
+        _st = st_of(my_roster)
+        recorded = (_st.get("wins", 0) + _st.get("losses", 0) + _st.get("ties", 0)) / (2 if settings.get("league_average_match") else 1)
+        already_counted = recorded >= week
+        mine_m = next((m for m in wk_m or [] if m.get("roster_id") == my_roster["roster_id"]), None)
+        if mine_m and mine_m.get("matchup_id") is not None:
+            exp = {}
+            info = {}
+            for m in wk_m:
+                if m.get("roster_id") in base_wins:
+                    e_, a_, lv, pr = _expected_points(m.get("starters"), m.get("players_points") or {}, proj_map,
+                                                      state_fn, players_db, stats_map, clock)
+                    exp[m["roster_id"]] = e_; info[m["roster_id"]] = (a_, lv, pr)
+            w2, pf2 = dict(base_wins), dict(base_pf)
+            pairs = {}
+            for m in wk_m:
+                if m.get("matchup_id") is not None and m.get("roster_id") in exp:
+                    pairs.setdefault(m["matchup_id"], []).append(m["roster_id"])
+            for ids in pairs.values():
+                if len(ids) != 2 or already_counted:
+                    continue
+                a, b = ids
+                if exp[a] > exp[b]: w2[a] += 1
+                elif exp[b] > exp[a]: w2[b] += 1
+                else: w2[a] += 0.5; w2[b] += 0.5
+            if settings.get("league_average_match") and exp and not already_counted:
+                vals = sorted(exp.values()); n = len(vals)
+                med = (vals[(n - 1) // 2] + vals[n // 2]) / 2
+                for rid, v in exp.items():
+                    w2[rid] += 1 if v > med else 0.5 if v == med else 0
+            for rid, v in exp.items():
+                pf2[rid] += 0 if already_counted else v
+            proj_standings = sorted(team_ids, key=lambda r: (-w2[r], -pf2[r]))
+            me_id = my_roster["roster_id"]
+            opp_id = next((x for x in pairs.get(mine_m["matchup_id"], []) if x != me_id), None)
+            if opp_id is not None:
+                my_e, op_e = exp.get(me_id, 0), exp.get(opp_id, 0)
+                a_me, lv_me, pr_me = info.get(me_id, (0, 0, 0)); a_op, lv_op, pr_op = info.get(opp_id, (0, 0, 0))
+                started = bool(a_me or a_op or lv_me or lv_op)
+                done = not (lv_me or pr_me or lv_op or pr_op)
+                st_me = st_of(my_roster)
+                add = 0 if already_counted else 1
+                wins_p = st_me.get("wins", 0) + add * (1 if my_e > op_e else 0)
+                losses_p = st_me.get("losses", 0) + add * (1 if my_e < op_e else 0)
+                ties_p = st_me.get("ties", 0) + add * (1 if my_e == op_e else 0)
+                if settings.get("league_average_match") and not already_counted:
+                    if w2[me_id] - base_wins[me_id] - (1 if my_e > op_e else 0.5 if my_e == op_e else 0) >= 1: wins_p += 1
+                    else: losses_p += 1
+                proj_rank = proj_standings.index(me_id) + 1
+                this_week = {
+                    "week": week, "opp": team_name(next(x for x in rosters if x["roster_id"] == opp_id)),
+                    "my_exp": my_e, "opp_exp": op_e, "my_actual": a_me, "opp_actual": a_op,
+                    "result": "W" if my_e > op_e else "L" if my_e < op_e else "T",
+                    "status": "final" if done or already_counted else "live" if started else "pre",
+                    "my_left": {"live": lv_me, "pre": pr_me}, "opp_left": {"live": lv_op, "pre": pr_op},
+                    "proj_record": f"{wins_p}-{losses_p}" + (f"-{ties_p}" if ties_p else ""),
+                    "proj_rank": proj_rank, "rank_change": rank_now - proj_rank,
+                    "proj_in": proj_rank <= playoff_spots,
+                }
+
         results.append({
             "league": league["name"], "team": my_team_name,
             "record": f"{st_of(my_roster).get('wins', 0)}-{st_of(my_roster).get('losses', 0)}" + (f"-{st_of(my_roster)['ties']}" if st_of(my_roster).get("ties") else ""),
@@ -2910,7 +3010,7 @@ async def get_playoff_odds(req: UserRequest, only_league_id: Optional[str] = Non
             "league_mu": round(league_mu, 1),
             "playoff_pct": pct, "bye_pct": me["bye_pct"], "exp_wins": me["exp_wins"], "wins_hist": me["wins_hist"],
             "status": status, "color": color, "advice": advice, "clinch": clinch,
-            "next_game": next_game,
+            "next_game": next_game, "this_week": this_week,
             "league_table": [{"team": n, "wins": w, "playoff_pct": p} for p, n, w in others],
         })
 
@@ -4458,6 +4558,7 @@ async def get_playoff_picture(req: UserRequest):
         ng = r.get("next_game") or {}
         row["next"] = {"opp": ng.get("opp_name"), "win_prob": ng.get("win_prob"), "swing": ng.get("swing")} if ng else None
         row["clinch"] = r.get("clinch")
+        row["this_week"] = r.get("this_week")
         if r["rank"] <= r["playoff_spots"]:
             row["seed"] = r["rank"]
             row["has_bye"] = r["rank"] <= r["byes"]
@@ -4482,7 +4583,9 @@ async def get_playoff_picture(req: UserRequest):
         "inside": inside, "outside": outside,
         "note": "In a spot = current seed by wins, then points for. Cushion = wins ahead of the first team out. "
                 "Odds come from the Playoff Odds simulation. Leagues past their regular season aren't listed. "
-                "✅/❌ and magic/elimination numbers go by wins only and assume you lose any tie in wins (points for can't be predicted).",
+                "✅/❌ and magic/elimination numbers go by wins only and assume you lose any tie in wins (points for can't be predicted). "
+                "This week = the latest projection (actual points for finished players, live-updated for games in progress); "
+                "'if it holds' re-seeds the league as if every game this week ends that way.",
     }
 
 

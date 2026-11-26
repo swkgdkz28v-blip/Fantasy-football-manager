@@ -671,6 +671,22 @@ function PlayoffPictureView({ data }) {
     return e('span', { style: { fontSize: 10, fontWeight: 800, color: col, border: `1px solid ${col}`, borderRadius: 6, padding: '1px 6px', whiteSpace: 'nowrap', flexShrink: 0 } }, c.number != null ? `${t} ${c.number}` : t); };
   const clLine = c => !c ? null : c.code === 'magic' ? `Clinches after any ${c.number}: your wins or ${c.vs} losses`
     : c.code === 'elim' ? `Out after any ${c.number}: your losses or ${c.vs} wins` : null;
+  // this week's matchup on the latest projection, and the seed if every game this week ends that way
+  const twLine = r => {
+    const t = r.this_week; if (!t) return null;
+    const res = t.result === 'W' ? 'var(--accent)' : t.result === 'L' ? 'var(--accent2)' : 'var(--text2)';
+    const tag = t.status === 'final' ? 'FINAL' : t.status === 'live' ? 'LIVE' : 'PROJ';
+    const ch = t.rank_change || 0;
+    const seedCol = t.proj_in && !(r.rank <= r.playoff_spots) ? 'var(--accent)' : !t.proj_in && r.rank <= r.playoff_spots ? 'var(--accent2)' : ch > 0 ? 'var(--accent)' : ch < 0 ? 'var(--accent2)' : 'var(--text2)';
+    const inOut = t.proj_in && !(r.rank <= r.playoff_spots) ? ' · moves IN' : !t.proj_in && r.rank <= r.playoff_spots ? ' · drops OUT' : '';
+    return e('div', { style: { marginTop: 4, paddingTop: 4, borderTop: '1px dashed var(--border)', fontSize: 11, lineHeight: 1.4 } },
+      e('div', { style: { display: 'flex', gap: 6, alignItems: 'baseline' } },
+        e('span', { style: { fontSize: 9, fontWeight: 800, color: t.status === 'live' ? 'var(--accent4)' : 'var(--text3)' } }, `WK ${t.week} ${tag}`),
+        e('span', { style: { fontWeight: 800, color: res, whiteSpace: 'nowrap' } }, `${t.result} ${t.my_exp.toFixed(1)}–${t.opp_exp.toFixed(1)}`)),
+      e('div', { style: { color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `vs ${t.opp}`),
+      e('div', { style: { color: seedCol, fontWeight: 700 } },
+        `${t.status === 'final' ? 'Seed' : 'If it holds'}: #${r.rank} → #${t.proj_rank}${ch ? ` (${ch > 0 ? '▲' : '▼'}${Math.abs(ch)})` : ''} · ${t.proj_record}${inOut}`));
+  };
   const row = (r, left, right) => e('div', { key: r.league, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${pctColor(r.playoff_pct)}`, borderRadius: 10, marginBottom: 6 } },
     left,
     e('div', { style: { flex: 1, minWidth: 0 } },
@@ -678,8 +694,9 @@ function PlayoffPictureView({ data }) {
         e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }, r.league),
         chip(r.clinch)),
       e('div', { style: { fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-        `${r.team} · ${r.record} · #${r.rank}/${r.total_teams}${r.next && r.next.opp ? ` · next vs ${r.next.opp}${r.next.swing >= 20 ? ' 🔥' : ''}` : ''}`),
-      clLine(r.clinch) && e('div', { style: { fontSize: 11, color: CL[r.clinch.code][1], lineHeight: 1.3, marginTop: 1 } }, clLine(r.clinch))),
+        `${r.team} · ${r.record} · #${r.rank}/${r.total_teams}${!r.this_week && r.next && r.next.opp ? ` · next vs ${r.next.opp}` : ''}${r.next && r.next.swing >= 20 ? ' 🔥' : ''}`),
+      clLine(r.clinch) && e('div', { style: { fontSize: 11, color: CL[r.clinch.code][1], lineHeight: 1.3, marginTop: 1 } }, clLine(r.clinch)),
+      twLine(r)),
     right,
     e('div', { style: { textAlign: 'right', minWidth: 52 } },
       e('div', { style: { fontSize: 15, fontWeight: 800, color: pctColor(r.playoff_pct) } }, `${r.playoff_pct}%`),

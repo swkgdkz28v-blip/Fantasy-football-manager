@@ -4,27 +4,36 @@
 
 // ── DRAFT PICKS VIEW ──────────────────────────────────────────────────────────
 function DraftPicksView({ data }) {
+  const [yr, setYr] = useState('all');
   if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No draft pick data found.'));
-  const total = data.results.reduce((s, r) => s + (r.upcoming_picks?.length || 0), 0);
+  const sm = data.summary || {};
+  const years = [...new Set(data.results.flatMap(r => r.seasons || []))].sort();
+  const pick = (p, i) => e('div', { key: i, style: { padding: '6px 10px', background: 'var(--surface2)', border: `1px solid ${p.round === 1 ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 8, fontSize: 12 } },
+    e('div', { style: { fontWeight: 700, color: p.round === 1 ? 'var(--accent)' : 'var(--accent4)' } }, `${p.season} Rd ${p.round}`),
+    e('div', { style: { fontSize: 10, color: p.own ? 'var(--text3)' : 'var(--purple)' } }, p.own ? 'Own' : `From ${p.original_owner}`));
+  const pill = (on, label, onClick) => e('button', { key: label, onClick, style: { flex: 1, padding: '7px 4px', fontSize: 12, fontWeight: 700, borderRadius: 8, border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--surface2)' : 'transparent', color: on ? 'var(--text)' : 'var(--text3)' } }, label);
   return e('div', null,
     e('div', { className: 'stat-row' },
-      e(StatTile, { value: total, label: 'Total Picks', color: 'var(--accent4)' }),
-      e(StatTile, { value: data.results.filter(r => r.upcoming_picks?.length).length, label: 'Leagues', color: 'var(--text2)' })
-    ),
-    data.results.map(r => e(Card, { key: r.league },
-      e('div', { className: 'card-title' }, r.league),
-      r.team && e('div', { className: 'card-subtitle', style: { marginBottom: 10 } }, r.team),
-      !r.team && e('div', { style: { marginBottom: 10 } }),
-      r.upcoming_picks?.length === 0
-        ? e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, 'No upcoming picks')
-        : e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
-            r.upcoming_picks.map((p, i) => e('div', { key: i, style: { padding: '6px 12px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 } },
-              e('div', { style: { fontWeight: 700, color: 'var(--accent4)' } }, `Round ${p.round}`),
-              e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${p.season} · From ${p.original_owner}`)
-            ))
-          )
-    ))
-  );
+      e(StatTile, { value: sm.picks ?? 0, label: 'Picks Held', color: 'var(--accent4)' }),
+      e(StatTile, { value: sm.firsts ?? 0, label: '1st Rounders', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.acquired ?? 0, label: 'Acquired', color: 'var(--purple)' }),
+      e(StatTile, { value: sm.traded_away ?? 0, label: 'Traded Away', color: 'var(--accent2)' })),
+    years.length > 1 && e('div', { style: { display: 'flex', gap: 6, marginBottom: 10 } },
+      pill(yr === 'all', 'All', () => setYr('all')), years.map(y => pill(yr === y, y, () => setYr(y)))),
+    data.results.map(r => {
+      const held = r.upcoming_picks.filter(p => yr === 'all' || p.season === yr);
+      const away = (r.traded_away || []).filter(p => yr === 'all' || p.season === yr);
+      return e(Card, { key: r.league },
+        e('div', { className: 'card-header', style: { marginBottom: 8 } },
+          e('div', { style: { minWidth: 0 } }, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+          e(Tag, { color: held.length ? 'blue' : 'red' }, `${held.length} pick${held.length === 1 ? '' : 's'}`)),
+        held.length === 0
+          ? e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, 'No picks held')
+          : e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } }, held.map(pick)),
+        away.length > 0 && e('div', { style: { fontSize: 11, color: 'var(--accent2)', marginTop: 8 } },
+          'Traded away: ' + away.map(p => `${p.season} Rd ${p.round} → ${p.to}`).join(' · ')));
+    }),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
 }
 
 // ── DRAFT DATES VIEW ──────────────────────────────────────────────────────────

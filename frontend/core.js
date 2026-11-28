@@ -163,7 +163,7 @@ const FF = {
     return null;
   },
 };
-const TAB_ORDER = ['today', 'lineups', 'roster', 'dynasty', 'leagues'];
+const TAB_ORDER = ['today', 'lineups', 'roster', 'dynasty', 'draft', 'leagues'];
 // Badge helper for tab files: count → coloured pill on the list row (only after the feature has run this session)
 const cnt = (n, color) => n == null ? null : (n === 0 ? { n: '✓', color: 'green' } : { n, color });
 

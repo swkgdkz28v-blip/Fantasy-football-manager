@@ -2162,16 +2162,33 @@ async def get_season_forecast(req: UserRequest):
 
 # ── DRAFT DATA ────────────────────────────────────────────────────────────────
 
+async def _safe_draft(d):
+    try:
+        return await get_draft(d["draft_id"])
+    except Exception:
+        return None
+
+
 @router.post("/analysis/draft-picks")
 async def get_draft_picks(req: UserRequest):
-    """Every rookie-draft pick you hold for the next two drafts, in every league: your own picks you still have
+    """Every rookie-draft pick you hold for the next three drafts, in every league: your own picks you still have
     plus picks you acquired, and a list of your own picks you've traded away."""
     user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
     user_id = user["user_id"]
     fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"]),
-                                                    get_traded_picks(lg["league_id"])) for lg in leagues])
+                                                    get_traded_picks(lg["league_id"]), get_drafts(lg["league_id"])) for lg in leagues])
+    # Upcoming drafts whose order is set: fetch the full draft to read slot → roster
+    upcoming = {}
+    for lg, (_, _, _, drafts) in zip(leagues, fetched):
+        for d in drafts or []:
+            if d.get("status") in ("pre_draft", "drafting", "paused") and d.get("type") != "auction":
+                upcoming[(lg["league_id"], str(d.get("season")))] = d
+    details = await asyncio.gather(*[_safe_draft(d) for d in upcoming.values()])
+    for k, det in zip(list(upcoming), details):
+        if det:
+            upcoming[k] = {**upcoming[k], **det}
     results = []
-    for lg, (rosters, league_users, traded_picks) in zip(leagues, fetched):
+    for lg, (rosters, league_users, traded_picks, _drafts) in zip(leagues, fetched):
         my = next((r for r in rosters if r.get("owner_id") == user_id), None)
         if not my:
             continue
@@ -2180,26 +2197,60 @@ async def get_draft_picks(req: UserRequest):
         lg_season = int(lg.get("season") or season)
         # before/during this league-year's draft, that draft is still ahead; otherwise next year's is the first
         first = lg_season if lg.get("status") in ("pre_draft", "drafting") else lg_season + 1
-        years = [str(first), str(first + 1)]
+        years = [str(first + i) for i in range(3)]          # Sleeper tracks three future drafts
         tname = {r["roster_id"]: _team_name(r, league_users, f"Team {r['roster_id']}") for r in rosters}
         owner_of = {}
         for tp in traded_picks or []:
             if str(tp.get("season")) in years:
                 owner_of[(str(tp["season"]), tp.get("round"), tp.get("roster_id"))] = tp.get("owner_id")
+        # draft slot of each original roster, for years whose draft order is set
+        slot_of = {}
+        for yr in years:
+            d = upcoming.get((lg["league_id"], yr))
+            if not d:
+                continue
+            sm = {}
+            for sl, rid in (d.get("slot_to_roster_id") or {}).items():
+                if rid is not None:
+                    sm[int(rid)] = int(sl)
+            if not sm:
+                by_user = {r.get("owner_id"): r["roster_id"] for r in rosters}
+                for uid, sl in (d.get("draft_order") or {}).items():
+                    if uid in by_user:
+                        sm[by_user[uid]] = int(sl)
+            if sm:
+                ds = d.get("settings") or {}
+                slot_of[yr] = (sm, int(ds.get("teams") or len(rosters)), d.get("type") or "linear", int(ds.get("reversal_round") or 0))
+
+        def pick_no(yr, rnd, orig):
+            """'1.01' style label: round . pick-in-round (snake / 3rd-round-reversal aware)."""
+            if yr not in slot_of or orig not in slot_of[yr][0]:
+                return None, None
+            sm, teams, typ, rev = slot_of[yr]
+            slot = sm[orig]
+            flip = (typ == "snake" and rnd % 2 == 0)
+            if rev and rnd >= rev:
+                flip = not flip
+            pos = teams + 1 - slot if flip else slot
+            return f"{rnd}.{pos:02d}", (rnd - 1) * teams + pos
+
         held, traded_away = [], []
         for yr in years:
             for rnd in range(1, rounds + 1):
                 for r in rosters:
                     orig = r["roster_id"]
                     owner = owner_of.get((yr, rnd, orig), orig)
+                    label, overall = pick_no(yr, rnd, orig)
                     if owner == me:
-                        held.append({"season": yr, "round": rnd, "own": orig == me,
+                        held.append({"season": yr, "round": rnd, "own": orig == me, "pick": label, "overall": overall,
                                      "original_owner": "Own" if orig == me else tname.get(orig, f"Team {orig}")})
                     elif orig == me:
-                        traded_away.append({"season": yr, "round": rnd, "to": tname.get(owner, f"Team {owner}")})
-        held.sort(key=lambda x: (x["season"], x["round"], not x["own"]))
+                        traded_away.append({"season": yr, "round": rnd, "pick": label, "overall": overall,
+                                            "to": tname.get(owner, f"Team {owner}")})
+        held.sort(key=lambda x: (x["season"], x["round"], x["overall"] or 999, not x["own"]))
+        traded_away.sort(key=lambda x: (x["season"], x["round"], x["overall"] or 999))
         results.append({"league": lg["name"], "team": tname.get(me, user.get("display_name", "")),
-                        "seasons": years, "rounds": rounds, "upcoming_picks": held, "traded_away": traded_away,
+                        "seasons": years, "rounds": rounds, "order_set": sorted(slot_of), "upcoming_picks": held, "traded_away": traded_away,
                         "firsts": sum(1 for x in held if x["round"] == 1),
                         "acquired": sum(1 for x in held if not x["own"])})
     return {"results": results,
@@ -2208,7 +2259,7 @@ async def get_draft_picks(req: UserRequest):
                         "acquired": sum(r["acquired"] for r in results),
                         "traded_away": sum(len(r["traded_away"]) for r in results),
                         "leagues": len(results)},
-            "note": "Next two rookie drafts per league. Own = your original pick you still hold."}
+            "note": "Next three rookie drafts per league (what Sleeper tracks). Own = your original pick you still hold. Pick numbers (1.01) appear once a draft's order is set."}
 
 @router.post("/analysis/draft-dates")
 async def get_draft_dates(req: UserRequest):

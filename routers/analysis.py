@@ -5261,3 +5261,353 @@ async def get_closest_games(req: UserRequest):
         "games": games,
         "note": "Ordered by current margin. Live games can still move; under each score you'll see how many starters are playing now or yet to play.",
     }
+
+
+# ══ ROOKIE DRAFT TOOLS (v11.6): Roster Crunch · Draft-For · On the Clock · Rookie Exposure · Draft Recap ══
+
+def _next_draft_year(lg, season):
+    """The next rookie draft for a league: this league-year's if it hasn't happened yet, else next year's."""
+    lg_season = int(lg.get("season") or season)
+    return str(lg_season if lg.get("status") in ("pre_draft", "drafting") else lg_season + 1)
+
+
+def _picks_held(me, rosters, traded_picks, year, rounds):
+    """Picks a roster holds in one draft year: [{'round', 'original_roster'}]."""
+    owner_of = {(tp.get("round"), tp.get("roster_id")): tp.get("owner_id")
+                for tp in traded_picks or [] if str(tp.get("season")) == str(year)}
+    out = []
+    for rnd in range(1, rounds + 1):
+        for r in rosters:
+            if owner_of.get((rnd, r["roster_id"]), r["roster_id"]) == me:
+                out.append({"round": rnd, "original_roster": r["roster_id"]})
+    return out
+
+
+def _is_pos(p, pos):
+    return pos in (p.get("fantasy_positions") or [p.get("position")])
+
+
+# ── 4. ROSTER CRUNCH ──────────────────────────────────────────────────────────
+
+@router.post("/analysis/roster-crunch")
+async def get_roster_crunch(req: UserRequest):
+    """Per league: picks in the next rookie draft vs open roster + taxi spots, how many cuts/trades that forces,
+    and the lowest-value bench players as cut candidates."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    proj_array = await get_projections(season, current_week)
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"]),
+                                                    get_traded_picks(lg["league_id"])) for lg in leagues])
+    results, room = [], []
+    for order, (lg, (rosters, league_users, traded)) in enumerate(zip(leagues, fetched)):
+        my = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        if not my:
+            continue
+        st = lg.get("settings") or {}
+        rp = lg.get("roster_positions") or []
+        active_cap = sum(1 for x in rp if x not in ("IR", "TAXI"))
+        taxi_cap = int(st.get("taxi_slots") or 0)
+        taxi_years = int(st.get("taxi_years") or 0)
+        players = [str(x) for x in (my.get("players") or [])]
+        taxi = [str(x) for x in (my.get("taxi") or [])]
+        reserve = [str(x) for x in (my.get("reserve") or [])]
+        active = [pid for pid in players if pid not in set(taxi) | set(reserve)]
+        open_active = active_cap - len(active)
+        open_taxi = max(taxi_cap - len(taxi), 0)
+        year = _next_draft_year(lg, season)
+        rounds = int(st.get("draft_rounds") or 4)
+        held = _picks_held(my["roster_id"], rosters, traded, year, rounds)
+        n_picks = len(held)
+        # taxi players who'll be too experienced next year have to move up to the active roster
+        must_promote = []
+        if taxi_years:
+            for pid in taxi:
+                p = players_db.get(pid) or {}
+                if int(p.get("years_exp") or 0) + 1 >= taxi_years:
+                    must_promote.append(player_name(p) or pid)
+        open_total = open_active + open_taxi
+        short = n_picks - open_total
+        # cut candidates: lowest dynasty value among non-core active players
+        proj_map = build_proj_map(proj_array, lg.get("scoring_settings") or {})
+        superflex = "SUPER_FLEX" in rp
+        ca = _core_age(lg, my, players_db, proj_map)
+        core_ids = {x["id"] for x in (ca or {}).get("core", [])}
+        cands = []
+        for pid in active:
+            if pid in core_ids:
+                continue
+            p = players_db.get(pid) or {}
+            pos = p.get("position") or ""
+            val = _dyn_value(proj_map.get(pid, 0), pos, p.get("age"), superflex)
+            cands.append({"id": pid, "name": player_name(p) or pid, "position": pos, "team": p.get("team") or "FA",
+                          "age": p.get("age"), "value": val})
+        cands.sort(key=lambda x: (x["value"], -(x["age"] or 0)))
+        row = {"order": order, "league": lg["name"], "team": _team_name(my, league_users, user.get("display_name", "")),
+               "draft_year": year, "picks": n_picks, "firsts": sum(1 for x in held if x["round"] == 1),
+               "open_active": open_active, "open_taxi": open_taxi, "taxi_slots": taxi_cap,
+               "active_used": len(active), "active_cap": active_cap, "must_promote": must_promote,
+               "short": max(short, 0), "spare": max(-short, 0),
+               "status": "cuts" if short > 0 else "tight" if short == 0 and n_picks else "room",
+               "cut_candidates": cands[:max(short, 0) + 2] if short >= 0 else []}
+        (results if row["status"] != "room" else room).append(row)
+    return {"summary": {"leagues": len(results) + len(room), "need_cuts": sum(1 for r in results if r["status"] == "cuts"),
+                        "cuts_total": sum(r["short"] for r in results), "tight": sum(1 for r in results if r["status"] == "tight"),
+                        "room": len(room)},
+            "results": results, "room": room,
+            "note": "Assumes rookies can go on taxi. Open spots use today's roster settings — check if your league changes "
+                    "roster size in the offseason. Cut candidates = lowest dynasty value outside your best lineup."}
+
+
+# ── 5. DRAFT-FOR GUIDE ────────────────────────────────────────────────────────
+
+@router.post("/analysis/draft-for")
+async def get_draft_for(req: UserRequest):
+    """Which positions to target in each league's next rookie draft, with the reasons: lineup demand,
+    how young your depth is, and core starters at or near their age cliff."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    proj_array = await get_projections(season, current_week)
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"])) for lg in leagues])
+    results, counts = [], {}
+    for order, (lg, (rosters, league_users)) in enumerate(zip(leagues, fetched)):
+        my = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        if not my:
+            continue
+        proj_map = build_proj_map(proj_array, lg.get("scoring_settings") or {})
+        slots = [x for x in (lg.get("roster_positions") or []) if x not in ("BN", "IR", "TAXI")]
+        superflex = "SUPER_FLEX" in slots
+        te_prem = float((lg.get("scoring_settings") or {}).get("bonus_rec_te") or 0) > 0
+        ca = _core_age(lg, my, players_db, proj_map) or {}
+        core = ca.get("core", [])
+        roster = [players_db[pid] for pid in (str(x) for x in (my.get("players") or [])) if pid in players_db]
+        rows = []
+        for pos in [x for x in ("QB", "RB", "WR", "TE") if x in league_positions(lg)]:
+            demand = sum(1 for x in slots if x == pos) + sum(0.5 for x in slots if x != pos and pos in SLOT_ELIGIBILITY.get(x, []) and len(SLOT_ELIGIBILITY.get(x, [])) > 1)
+            have = [p for p in roster if p.get("position") == pos]
+            young = [p for p in have if (p.get("age") or 99) <= 24]
+            core_pos = [x for x in core if x["position"] == pos]
+            cliff = CLIFF.get(pos, 30)
+            aging = [x for x in core_pos if x["age"] >= cliff - 1]
+            score = demand * 1.5 - len(young) + 1.0 * len(aging) - 0.25 * max(len(have) - demand - 1, 0)
+            if pos == "QB" and superflex: score += 1.0
+            if pos == "TE" and te_prem: score += 0.5
+            why = []
+            if aging:
+                why.append(", ".join(f"{x['name'].split(' ')[-1]} {x['age']}" for x in aging[:2]) + (" past cliff" if any(x["age"] >= cliff for x in aging) else " near cliff"))
+            why.append(f"{len(young)} age 24 or under")
+            if core_pos:
+                why.append(f"starters avg {round(sum(x['age'] for x in core_pos) / len(core_pos), 1)}")
+            if pos == "QB" and superflex: why.append("superflex")
+            if pos == "TE" and te_prem: why.append("TE premium")
+            rows.append({"position": pos, "score": round(score, 2), "starters": round(demand, 1), "rostered": len(have),
+                         "young": len(young), "aging": len(aging), "why": " · ".join(why)})
+        rows.sort(key=lambda x: -x["score"])
+        for i, r in enumerate(rows):
+            r["grade"] = "Target" if i < 2 and r["score"] >= 1.5 else "Depth" if r["score"] >= 0.5 else "Set"
+        targets = [r["position"] for r in rows if r["grade"] == "Target"] or ["BPA"]
+        for t in targets:
+            counts[t] = counts.get(t, 0) + 1
+        results.append({"order": order, "league": lg["name"], "team": _team_name(my, league_users, user.get("display_name", "")),
+                        "targets": targets, "window": ca.get("window"), "core_age": ca.get("core_age"),
+                        "superflex": superflex, "te_premium": te_prem, "positions": rows})
+    return {"summary": {"leagues": len(results), "by_target": counts},
+            "results": results,
+            "note": "BPA = no clear hole, take the best player available. Cliffs: RB 27, WR 30, TE 31, QB 35."}
+
+
+# ── 7. ON THE CLOCK ───────────────────────────────────────────────────────────
+
+@router.post("/analysis/on-the-clock")
+async def get_on_the_clock(req: UserRequest):
+    """Every draft in progress across your leagues: who's up, how many picks until you, your picks so far and
+    the last few picks. Drafts where you're on the clock come first, then the ones where you're up soonest."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    lists = await asyncio.gather(*[get_drafts(lg["league_id"]) for lg in leagues])
+    live = [(lg, d) for lg, ds in zip(leagues, lists) for d in (ds or []) if d.get("status") in ("drafting", "paused")]
+    if not live:
+        return {"summary": {"live": 0, "on_clock": 0}, "results": [], "note": "No drafts in progress right now."}
+    fetched = await asyncio.gather(*[asyncio.gather(get_draft(d["draft_id"]), get_draft_picks(d["draft_id"]),
+                                                    get_draft_traded_picks(d["draft_id"]), get_rosters(lg["league_id"]),
+                                                    get_league_users(lg["league_id"])) for lg, d in live])
+    now_ms = datetime.now(timezone.utc).timestamp() * 1000
+    results = []
+    for (lg, d), (det, picks, dtraded, rosters, league_users) in zip(live, fetched):
+        det = {**d, **(det or {})}
+        my = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        if not my:
+            continue
+        me = my["roster_id"]
+        ds = det.get("settings") or {}
+        teams = int(ds.get("teams") or len(rosters))
+        rounds = int(ds.get("rounds") or 4)
+        typ, rev = det.get("type") or "snake", int(ds.get("reversal_round") or 0)
+        s2r = {int(k): v for k, v in (det.get("slot_to_roster_id") or {}).items() if v is not None}
+        if not s2r:
+            by_user = {r.get("owner_id"): r["roster_id"] for r in rosters}
+            s2r = {int(sl): by_user.get(uid) for uid, sl in (det.get("draft_order") or {}).items() if by_user.get(uid)}
+        traded = {(tp.get("round"), tp.get("roster_id")): tp.get("owner_id") for tp in dtraded or []}
+        tname = {r["roster_id"]: _team_name(r, league_users, f"Team {r['roster_id']}") for r in rosters}
+
+        def owner(n):
+            rnd, pos = (n - 1) // teams + 1, (n - 1) % teams + 1
+            flip = typ == "snake" and rnd % 2 == 0
+            if rev and rnd >= rev:
+                flip = not flip
+            slot = teams + 1 - pos if flip else pos
+            orig = s2r.get(slot)
+            return rnd, pos, traded.get((rnd, orig), orig)
+
+        made = sorted(picks or [], key=lambda p: p.get("pick_no") or 0)
+        cur = len(made) + 1
+        total = teams * rounds
+        my_next = [n for n in range(cur, total + 1) if owner(n)[2] == me][:3]
+        rnd, pos, up = owner(cur) if cur <= total else (None, None, None)
+        on_clock = cur <= total and up == me
+        timer = int(ds.get("pick_timer") or 0)
+        last = det.get("last_picked")
+        secs_left = max(int(timer - (now_ms - last) / 1000), 0) if timer and last and d.get("status") == "drafting" else None
+
+        def row(p):
+            pid = str(p.get("player_id") or "")
+            pl = players_db.get(pid) or {}
+            md = p.get("metadata") or {}
+            nm = player_name(pl) or f"{md.get('first_name', '')} {md.get('last_name', '')}".strip() or pid
+            return {"pick": f"{p.get('round')}.{((p.get('pick_no') or 1) - 1) % teams + 1:02d}", "name": nm,
+                    "position": pl.get("position") or md.get("position") or "", "team": pl.get("team") or md.get("team") or "",
+                    "by": tname.get(p.get("roster_id"), "") if p.get("roster_id") else ""}
+        mine = [row(p) for p in made if p.get("roster_id") == me]
+        results.append({
+            "league": lg["name"], "team": tname.get(me), "status": d.get("status"),
+            "current": f"{rnd}.{pos:02d}" if rnd else "Done", "up": tname.get(up, "—") if up else "—",
+            "on_clock": on_clock, "picks_until": (my_next[0] - cur) if my_next else None,
+            "next_picks": [f"{(n - 1) // teams + 1}.{(n - 1) % teams + 1:02d}" for n in my_next],
+            "picks_left_total": sum(1 for n in range(cur, total + 1) if owner(n)[2] == me),
+            "secs_left": secs_left, "timer": timer, "my_picks": mine, "recent": [row(p) for p in made[-3:]][::-1],
+            "made": len(made), "total": total})
+    results.sort(key=lambda r: (not r["on_clock"], r["picks_until"] if r["picks_until"] is not None else 9999))
+    return {"summary": {"live": len(results), "on_clock": sum(1 for r in results if r["on_clock"]),
+                        "up_within_3": sum(1 for r in results if r["picks_until"] is not None and r["picks_until"] <= 3)},
+            "results": results,
+            "note": "Refresh to update. Ordered by urgency: on the clock first, then fewest picks until you're up."}
+
+
+# ── 8/9. ROOKIE DRAFT HISTORY (shared): your leagues' completed rookie drafts ──
+
+async def _rookie_drafts(leagues):
+    """Completed rookie drafts in the given leagues (the league-year's own draft, mostly first-year players).
+    Returns [(league, draft, picks)]."""
+    lists = await asyncio.gather(*[get_drafts(lg["league_id"]) for lg in leagues])
+    cands = [(lg, d) for lg, ds in zip(leagues, lists) for d in (ds or []) if d.get("status") == "complete"]
+    picks = await asyncio.gather(*[get_draft_picks(d["draft_id"]) for _, d in cands])
+    out = []
+    for (lg, d), pk in zip(cands, picks):
+        pk = pk or []
+        if not pk:
+            continue
+        rookies = sum(1 for p in pk if str((p.get("metadata") or {}).get("years_exp", "")) == "0")
+        if rookies / len(pk) >= 0.6:
+            out.append((lg, d, pk))
+    return out
+
+
+def _norm_pick(p, teams):
+    """Pick as a decimal round (1.00 = first pick) so leagues of different sizes compare."""
+    n = (p.get("pick_no") or 1) - 1
+    return n / max(teams, 1)
+
+
+def _label12(x):
+    rnd = int(x) + 1
+    return f"{rnd}.{min(int(round((x - int(x)) * 12)) + 1, 12):02d}"
+
+
+@router.post("/analysis/rookie-exposure")
+async def get_rookie_exposure(req: UserRequest):
+    """How many shares of each first-year player you own across your leagues, and where (start/bench/taxi)."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    fetched = await asyncio.gather(*[get_rosters(lg["league_id"]) for lg in leagues])
+    agg, n_leagues = {}, 0
+    for lg, rosters in zip(leagues, fetched):
+        my = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        if not my:
+            continue
+        n_leagues += 1
+        starters = {str(x) for x in (my.get("starters") or [])}
+        taxi = {str(x) for x in (my.get("taxi") or [])}
+        reserve = {str(x) for x in (my.get("reserve") or [])}
+        for pid in (str(x) for x in (my.get("players") or [])):
+            p = players_db.get(pid) or {}
+            if int(p.get("years_exp") or 0) != 0 or p.get("years_exp") is None:
+                continue
+            role = "taxi" if pid in taxi else "ir" if pid in reserve else "start" if pid in starters else "bench"
+            a = agg.setdefault(pid, {"id": pid, "name": player_name(p) or pid, "position": p.get("position") or "",
+                                     "team": p.get("team") or "FA", "age": p.get("age"), "shares": 0,
+                                     "start": 0, "bench": 0, "taxi": 0, "ir": 0, "leagues": []})
+            a["shares"] += 1; a[role] += 1
+            a["leagues"].append({"league": lg["name"], "role": role})
+    rows = sorted(agg.values(), key=lambda x: (-x["shares"], x["name"]))
+    for r in rows:
+        r["pct"] = round(100 * r["shares"] / max(n_leagues, 1))
+    by_pos = {}
+    for r in rows:
+        by_pos[r["position"]] = by_pos.get(r["position"], 0) + r["shares"]
+    return {"summary": {"leagues": n_leagues, "rookies": len(rows), "shares": sum(r["shares"] for r in rows), "by_position": by_pos},
+            "results": rows,
+            "note": f"First-year players (the {season} class) on your rosters. % = share of your {n_leagues} leagues."}
+
+
+@router.post("/analysis/draft-recap")
+async def get_draft_recap(req: UserRequest):
+    """Your picks in each completed rookie draft, compared with where the same player went across all your
+    leagues' rookie drafts (your-league ADP, scaled to 12 teams). Positive = value, negative = reach."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    user_id = user["user_id"]
+    drafts = await _rookie_drafts(leagues)
+    rosters_all = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"])) for lg, _, _ in drafts])
+    # where each player went everywhere (decimal rounds)
+    spots = {}
+    for (lg, d, pk) in drafts:
+        teams = int((d.get("settings") or {}).get("teams") or 12)
+        for p in pk:
+            if p.get("player_id"):
+                spots.setdefault(str(p["player_id"]), []).append(_norm_pick(p, teams))
+    results, all_deltas = [], []
+    for (lg, d, pk), (rosters, league_users) in zip(drafts, rosters_all):
+        my = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        if not my:
+            continue
+        teams = int((d.get("settings") or {}).get("teams") or 12)
+        mine = []
+        for p in sorted(pk, key=lambda x: x.get("pick_no") or 0):
+            if p.get("roster_id") != my["roster_id"] and p.get("picked_by") != user_id:
+                continue
+            pid = str(p.get("player_id") or "")
+            pl = players_db.get(pid) or {}
+            md = p.get("metadata") or {}
+            here = _norm_pick(p, teams)
+            sp = spots.get(pid, [])
+            others = len(sp) - 1
+            avg = sum(sp) / len(sp) if sp else here
+            delta = round((here - avg) * 12, 1) if others >= 1 else None   # + = taken later than usual (value)
+            if delta is not None:
+                all_deltas.append(delta)
+            mine.append({"pick": f"{p.get('round')}.{((p.get('pick_no') or 1) - 1) % teams + 1:02d}",
+                         "name": player_name(pl) or f"{md.get('first_name', '')} {md.get('last_name', '')}".strip() or pid,
+                         "position": pl.get("position") or md.get("position") or "", "team": pl.get("team") or md.get("team") or "",
+                         "adp": _label12(avg) if others >= 1 else None, "samples": len(sp), "delta": delta,
+                         "verdict": None if delta is None else "Value" if delta >= 3 else "Reach" if delta <= -3 else "On par"})
+        if not mine:
+            continue
+        ds = [m["delta"] for m in mine if m["delta"] is not None]
+        results.append({"league": lg["name"], "team": _team_name(my, league_users, user.get("display_name", "")), "season": d.get("season"),
+                        "teams": teams, "picks": mine, "net": round(sum(ds), 1) if ds else None,
+                        "values": sum(1 for m in mine if m["verdict"] == "Value"),
+                        "reaches": sum(1 for m in mine if m["verdict"] == "Reach")})
+    return {"summary": {"drafts": len(results), "picks": sum(len(r["picks"]) for r in results),
+                        "values": sum(r["values"] for r in results), "reaches": sum(r["reaches"] for r in results),
+                        "net": round(sum(all_deltas), 1) if all_deltas else 0},
+            "results": results,
+            "note": "Your-league ADP = average spot each player went across your leagues' completed rookie drafts, scaled "
+                    "to 12 teams. +/− = picks later/earlier than that average; ±3 picks or more counts as Value/Reach."}

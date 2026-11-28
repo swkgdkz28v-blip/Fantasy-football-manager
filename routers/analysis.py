@@ -322,6 +322,90 @@ async def get_zero_projection_starters(req: UserRequest):
 
     return {"week": week, "results": results}
 
+@router.post("/alerts/superflex-non-qb")
+async def get_superflex_non_qb(req: UserRequest):
+    """Leagues where a non-QB is starting in a SUPER_FLEX slot. For each: the player, the best QB you could
+    put there instead (bench first, then free agents) with projections, so you can tell a mistake from a
+    deliberate start (QB on bye/injured, no QB available)."""
+    user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
+    week = req.week or current_week
+    user_id = user["user_id"]
+    proj_array, stats_array = await asyncio.gather(get_projections(season, week), get_stats(season, week))
+    stats_map = build_stats_map(stats_array)
+    played = lambda pid: (stats_map.get(str(pid), {}).get("gp") or 0) >= 1
+    byes = await bye_teams_for(season, week)
+    sf_leagues = [lg for lg in leagues if "SUPER_FLEX" in (lg.get("roster_positions") or []) and lg.get("status") != "complete"]
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"]),
+                                                    get_matchups(lg["league_id"], week)) for lg in sf_leagues])
+    qb_ids = [pid for pid, p in players_db.items() if "QB" in (p.get("fantasy_positions") or [p.get("position")]) and p.get("team")]
+
+    def usable(pid, p):
+        inj = (p.get("injury_status") or "").lower()
+        return not is_on_bye(p, byes, week) and inj not in ("out", "ir", "pup", "sus", "na", "doubtful") and not played(pid)
+
+    def info(pid, proj_map):
+        p = players_db.get(pid) or {}
+        inj = (p.get("injury_status") or "")
+        note = f"BYE" if is_on_bye(p, byes, week) else inj.upper() if inj else ""
+        return {"id": pid, "name": player_name(p) or pid, "position": p.get("position") or "", "team": p.get("team") or "FA",
+                "proj": round(proj_map.get(pid, 0), 1), "note": note, "played": played(pid)}
+
+    results, clean = [], []
+    for order, (lg, (rosters, league_users, matchups)) in enumerate(zip(sf_leagues, fetched)):
+        my = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        if not my:
+            continue
+        proj_map = build_proj_map(proj_array, lg.get("scoring_settings") or {})
+        slots = [x for x in lg.get("roster_positions", []) if x not in ("BN", "IR", "TAXI")]
+        mm = next((m for m in matchups or [] if m["roster_id"] == my["roster_id"]), None)
+        starters = [str(x) for x in ((mm or my).get("starters") or [])]
+        name = _team_name(my, league_users, user.get("display_name", ""))
+        flagged = []
+        for i, pid in enumerate(starters):
+            if i >= len(slots) or slots[i] != "SUPER_FLEX" or not pid or pid == "0":
+                continue
+            p = players_db.get(pid) or {}
+            if "QB" in (p.get("fantasy_positions") or [p.get("position")]):
+                continue
+            flagged.append(info(pid, proj_map))
+        if not flagged:
+            clean.append({"league": lg["name"], "team": name})
+            continue
+        start_set = set(starters)
+        reserve = set(str(x) for x in (my.get("reserve") or [])) | set(str(x) for x in (my.get("taxi") or []))
+        bench_qbs = sorted([info(pid, proj_map) for pid in (str(x) for x in my.get("players") or [])
+                            if pid not in start_set and pid not in reserve
+                            and "QB" in ((players_db.get(pid) or {}).get("fantasy_positions") or [(players_db.get(pid) or {}).get("position")])],
+                           key=lambda x: -x["proj"])
+        best_bench = next((q for q in bench_qbs if usable(q["id"], players_db.get(q["id"]) or {})), None)
+        rostered = {str(x) for r in rosters for x in (r.get("players") or [])}
+        fa = sorted([info(pid, proj_map) for pid in qb_ids if pid not in rostered and usable(pid, players_db.get(pid) or {})
+                     and proj_map.get(pid, 0) > 0], key=lambda x: -x["proj"])[:2]
+        items = []
+        for f in flagged:
+            alt = best_bench or (fa[0] if fa else None)
+            gain = round(alt["proj"] - f["proj"], 1) if alt else None
+            if f["played"]:
+                verdict, level = "Already played — locked", "info"
+            elif best_bench and gain is not None and gain > 0:
+                verdict, level = f"Swap in {best_bench['name']} (+{gain})", "fix"
+            elif best_bench:
+                verdict, level = f"Bench QB {best_bench['name']} projects {'the same' if gain == 0 else 'less'} — likely intentional", "ok"
+            elif fa and gain is not None and gain > 0:
+                verdict, level = f"No usable QB on bench — free agent {fa[0]['name']} (+{gain})", "fix"
+            else:
+                verdict, level = "No usable QB on bench or waivers", "ok"
+            items.append({**f, "verdict": verdict, "level": level, "gain": gain})
+        results.append({"order": order, "league": lg["name"], "team": name, "flagged": items,
+                        "bench_qbs": bench_qbs[:3], "fa_qbs": fa,
+                        "fix": any(x["level"] == "fix" for x in items)})
+    return {"week": week,
+            "summary": {"superflex_leagues": len(results) + len(clean), "flagged": len(results),
+                        "fixable": sum(1 for r in results if r["fix"]), "clean": len(clean)},
+            "results": results, "clean": clean,
+            "note": "Only leagues with a SUPER_FLEX slot are checked. 'Usable' QB = not on bye, not OUT/IR/Doubtful and hasn't played yet. "
+                    "Bench excludes IR and taxi."}
+
 # ── WEEK ANALYSIS ─────────────────────────────────────────────────────────────
 
 @router.post("/analysis/week")
@@ -3055,6 +3139,7 @@ async def get_weekly_digest(req: UserRequest):
         safe("bye", get_starters_on_bye(r)),
         safe("open", get_open_starter_spots(r)),
         safe("zero", get_zero_projection_starters(r)),
+        safe("sfqb", get_superflex_non_qb(r)),
         safe("optimal", get_optimal_lineup(r)),
         safe("waiver", get_waiver_watch(r)),
         safe("odds", get_playoff_odds(r)),
@@ -3087,6 +3172,11 @@ async def get_weekly_digest(req: UserRequest):
               and not ((z.get("injury_status") or "").lower() in ("out", "ir", "pup", "sus", "na"))]
         if zs:
             add(x["league"], x.get("team"), "HIGH", "zero_proj", f"{len(zs)} starter{'s' if len(zs) != 1 else ''} projected for 0", ", ".join(f"{z['name']} — {z.get('status', '')}" for z in zs))
+    for x in (data.get("sfqb") or {}).get("results", []):
+        fx = [f for f in x["flagged"] if f["level"] != "info"]
+        if fx:
+            add(x["league"], x.get("team"), "HIGH" if x["fix"] else "INFO", "superflex",
+                f"Non-QB in Superflex: {', '.join(f['name'] for f in fx)}", "; ".join(f["verdict"] for f in fx))
     for x in (data.get("questionable") or {}).get("results", []):
         add(x["league"], x.get("team"), "MEDIUM", "questionable", f"{len(x['questionable'])} questionable starter{'s' if len(x['questionable']) != 1 else ''}", ", ".join(p["name"] for p in x["questionable"]))
     for x in (data.get("optimal") or {}).get("results", []):

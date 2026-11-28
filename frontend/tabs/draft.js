@@ -179,20 +179,181 @@ function RookieBoardView({ data }) {
     data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
 }
 
+// ── shared bits for the rookie-draft tools ───────────────────────────────────
+const dPill = (on, label, onClick) => e('button', { key: label, onClick, style: { flex: 1, padding: '7px 4px', fontSize: 12, fontWeight: 700, borderRadius: 8, border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--surface2)' : 'transparent', color: on ? 'var(--text)' : 'var(--text3)' } }, label);
+const dNote = t => t && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, t);
+const dFold = (title, color, items) => items?.length > 0 && e('details', { className: 'card', style: { borderLeft: `3px solid ${color}` } },
+  e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color } }, title),
+  items.map((t, i) => e('div', { key: i, style: { fontSize: 12, padding: '6px 0', borderBottom: '1px solid var(--border)', color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, t)));
+const dHead = (title, sub, right) => e('div', { className: 'card-header', style: { marginBottom: 6 } },
+  e('div', { style: { minWidth: 0 } }, e('div', { className: 'card-title' }, title), sub && e('div', { className: 'card-subtitle' }, sub)), right);
+
+// ── ROSTER CRUNCH VIEW ────────────────────────────────────────────────────────
+function RosterCrunchView({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  const box = (v, l, c) => e('div', { style: { flex: 1, textAlign: 'center', padding: '6px 2px', background: 'var(--surface2)', borderRadius: 8 } },
+    e('div', { style: { fontSize: 18, fontWeight: 800, color: c } }, v), e('div', { style: { fontSize: 9, color: 'var(--text3)' } }, l));
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.need_cuts ?? 0, label: 'Leagues Need Cuts', color: 'var(--accent2)' }),
+      e(StatTile, { value: sm.cuts_total ?? 0, label: 'Cuts / Trades', color: 'var(--accent2)' }),
+      e(StatTile, { value: sm.tight ?? 0, label: 'Exactly Full', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.room ?? 0, label: 'Room to Spare', color: 'var(--accent)' })),
+    !data.results?.length && e(Alert, { type: 'success', title: '✅ Room everywhere' }, e('p', null, 'You have enough open spots for every pick you hold.')),
+    data.results?.map(r => e(Card, { key: r.league, borderColor: r.status === 'cuts' ? 'var(--accent2)' : 'var(--accent3)' },
+      dHead(r.league, r.team, e(Tag, { color: r.status === 'cuts' ? 'red' : 'orange' }, r.status === 'cuts' ? `${r.short} CUT${r.short === 1 ? '' : 'S'}` : 'FULL')),
+      e('div', { style: { display: 'flex', gap: 6, marginBottom: 8 } },
+        box(r.picks, `${r.draft_year} picks`, 'var(--accent4)'),
+        box(r.open_active, `open roster (${r.active_used}/${r.active_cap})`, r.open_active > 0 ? 'var(--accent)' : 'var(--text3)'),
+        box(r.taxi_slots ? r.open_taxi : '—', r.taxi_slots ? `open taxi (of ${r.taxi_slots})` : 'no taxi', r.open_taxi > 0 ? 'var(--accent)' : 'var(--text3)')),
+      r.must_promote?.length > 0 && e('div', { style: { fontSize: 11, color: 'var(--accent3)', marginBottom: 6 } }, `Likely aging off taxi: ${r.must_promote.join(', ')}`),
+      r.status === 'cuts' && !r.cut_candidates?.length && e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, 'Every active player is in your best lineup — trade a pick, or 2-for-1 to open a spot.'),
+      r.cut_candidates?.length > 0 && e('div', null,
+        e('div', { style: { fontSize: 10, fontWeight: 800, color: 'var(--text3)', letterSpacing: 0.5, marginBottom: 2 } }, 'LOWEST-VALUE BENCH (CUT CANDIDATES)'),
+        r.cut_candidates.map(c => e('div', { key: c.id, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' } },
+          e(PosBadge, { pos: c.position || '—' }),
+          e('span', { style: { flex: 1, fontSize: 13, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, c.name),
+          e('span', { style: { fontSize: 11, color: 'var(--text3)' } }, `${c.team}${c.age ? ` · ${c.age}` : ''}`)))))),
+    dFold(`✅ Room to spare (${data.room?.length || 0})`, 'var(--accent)', (data.room || []).map(r => `${r.league} · ${r.picks} picks · ${r.spare} extra spot${r.spare === 1 ? '' : 's'}`)),
+    dNote(data.note));
+}
+
+// ── DRAFT-FOR GUIDE VIEW ──────────────────────────────────────────────────────
+function DraftForView({ data }) {
+  const [pos, setPos] = useState('all');
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No leagues found.'));
+  const by = data.summary?.by_target || {};
+  const GC = { Target: 'var(--accent2)', Depth: 'var(--accent3)', Set: 'var(--accent)' };
+  const keys = ['QB', 'RB', 'WR', 'TE', 'BPA'].filter(k => by[k]);
+  const list = data.results.filter(r => pos === 'all' || r.targets.includes(pos));
+  return e('div', null,
+    e('div', { className: 'stat-row' }, keys.slice(0, 4).map(k => e(StatTile, { key: k, value: by[k], label: `Target ${k}`, color: 'var(--accent4)' }))),
+    e('div', { style: { display: 'flex', gap: 6, marginBottom: 10 } }, dPill(pos === 'all', 'All', () => setPos('all')), keys.map(k => dPill(pos === k, k, () => setPos(k)))),
+    list.map(r => e(Card, { key: r.league },
+      dHead(r.league, `${r.team}${r.window ? ` · ${r.window}` : ''}${r.core_age ? ` · core ${r.core_age}` : ''}`,
+        e('div', { style: { display: 'flex', gap: 4 } }, r.targets.map(t => e(Tag, { key: t, color: t === 'BPA' ? 'blue' : 'red' }, t)))),
+      r.positions.map(x => e('div', { key: x.position, style: { display: 'flex', gap: 8, alignItems: 'flex-start', padding: '5px 0', borderTop: '1px solid var(--border)' } },
+        e(PosBadge, { pos: x.position }),
+        e('div', { style: { flex: 1, minWidth: 0 } },
+          e('div', { style: { fontSize: 12, fontWeight: 800, color: GC[x.grade] } }, `${x.grade} · start ${x.starters} · have ${x.rostered}`),
+          e('div', { style: { fontSize: 11, color: 'var(--text3)', lineHeight: 1.35 } }, x.why)))))),
+    dNote(data.note));
+}
+
+// ── ON THE CLOCK VIEW ─────────────────────────────────────────────────────────
+function OnTheClockView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, data?.note || 'No drafts in progress right now.'));
+  const sm = data.summary || {};
+  const mmss = s => s == null ? null : s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  const pk = (p, i) => e('div', { key: i, style: { display: 'flex', gap: 8, alignItems: 'center', padding: '3px 0', fontSize: 12 } },
+    e('span', { style: { color: 'var(--text3)', minWidth: 34 } }, p.pick), e(PosBadge, { pos: p.position || '—' }),
+    e('span', { style: { flex: 1, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name),
+    p.by && e('span', { style: { fontSize: 10, color: 'var(--text3)', maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.by));
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.on_clock ?? 0, label: 'On the Clock', color: 'var(--accent2)' }),
+      e(StatTile, { value: sm.up_within_3 ?? 0, label: 'Up within 3', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.live ?? 0, label: 'Live Drafts', color: 'var(--accent4)' })),
+    data.results.map(r => e(Card, { key: r.league, borderColor: r.on_clock ? 'var(--accent2)' : r.picks_until != null && r.picks_until <= 3 ? 'var(--accent3)' : undefined },
+      dHead(r.league, r.team, r.on_clock
+        ? e('span', { style: { fontSize: 12, fontWeight: 800, color: '#fff', background: 'var(--accent2)', borderRadius: 6, padding: '3px 8px' } }, '⏰ YOU’RE UP')
+        : e(Tag, { color: r.status === 'paused' ? 'orange' : 'blue' }, r.status === 'paused' ? 'PAUSED' : r.picks_until == null ? 'NO PICKS LEFT' : `${r.picks_until} until you`)),
+      e('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6, gap: 8 } },
+        e('span', { style: { color: 'var(--text2)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `Now: ${r.current} · ${r.on_clock ? 'You' : r.up}`),
+        r.secs_left != null && e('span', { style: { fontWeight: 800, color: r.on_clock ? 'var(--accent2)' : 'var(--text3)', whiteSpace: 'nowrap' } }, `⏱ ${mmss(r.secs_left)}`)),
+      r.next_picks?.length > 0 && e('div', { style: { fontSize: 11, color: 'var(--accent4)', marginBottom: 6 } }, `Your next: ${r.next_picks.join(' · ')}${r.picks_left_total > r.next_picks.length ? ` (+${r.picks_left_total - r.next_picks.length} more)` : ''}`),
+      r.recent?.length > 0 && e('div', null, e('div', { style: { fontSize: 10, fontWeight: 800, color: 'var(--text3)', marginTop: 4 } }, 'LAST PICKS'), r.recent.map(pk)),
+      r.my_picks?.length > 0 && e('details', { style: { marginTop: 6 } },
+        e('summary', { style: { fontSize: 11, color: 'var(--accent)', cursor: 'pointer', fontWeight: 700 } }, `Your picks so far (${r.my_picks.length})`),
+        r.my_picks.map((p, i) => pk({ ...p, by: '' }, i))),
+      e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 6 } }, `${r.made} of ${r.total} picks made`))),
+    dNote(data.note));
+}
+
+// ── ROOKIE EXPOSURE VIEW ──────────────────────────────────────────────────────
+function RookieExposureView({ data }) {
+  const [pos, setPos] = useState('all');
+  const [open, setOpen] = useState(null);
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No first-year players on your rosters.'));
+  const sm = data.summary || {};
+  const poss = ['QB', 'RB', 'WR', 'TE'].filter(p => sm.by_position?.[p]);
+  const list = data.results.filter(r => pos === 'all' || r.position === pos);
+  const max = Math.max(...data.results.map(r => r.shares), 1);
+  const RC = { start: 'var(--accent)', bench: 'var(--accent3)', taxi: 'var(--purple)', ir: 'var(--accent2)' };
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.rookies ?? 0, label: 'Rookies Owned', color: 'var(--accent4)' }),
+      e(StatTile, { value: sm.shares ?? 0, label: 'Total Shares', color: 'var(--text)' }),
+      e(StatTile, { value: sm.leagues ?? 0, label: 'Leagues', color: 'var(--text3)' })),
+    e('div', { style: { display: 'flex', gap: 6, marginBottom: 10 } }, dPill(pos === 'all', 'All', () => setPos('all')), poss.map(p => dPill(pos === p, `${p} (${sm.by_position[p]})`, () => setPos(p)))),
+    list.map(r => e('div', { key: r.id, onClick: () => setOpen(open === r.id ? null : r.id), style: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: '8px 12px', marginBottom: 6, cursor: 'pointer' } },
+      e('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+        e(PosBadge, { pos: r.position || '—' }),
+        e('div', { style: { flex: 1, minWidth: 0 } },
+          e('div', { style: { fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.name),
+          e('div', { style: { fontSize: 11, color: 'var(--text3)' } }, `${r.team}${r.age ? ` · ${r.age}` : ''} · ${['start', 'bench', 'taxi', 'ir'].filter(k => r[k]).map(k => `${r[k]} ${k}`).join(' · ')}`)),
+        e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontSize: 18, fontWeight: 800, color: 'var(--accent4)' } }, r.shares),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, `${r.pct}%`))),
+      e('div', { style: { height: 4, background: 'var(--surface2)', borderRadius: 2, marginTop: 6 } }, e('div', { style: { width: `${100 * r.shares / max}%`, height: 4, background: 'var(--accent4)', borderRadius: 2 } })),
+      open === r.id && e('div', { style: { marginTop: 6 } }, r.leagues.map((l, i) => e('div', { key: i, style: { display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0', borderTop: '1px solid var(--border)' } },
+        e('span', { style: { color: 'var(--text2)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, l.league),
+        e('span', { style: { color: RC[l.role], fontWeight: 700, textTransform: 'capitalize', marginLeft: 8 } }, l.role)))))),
+    dNote(data.note));
+}
+
+// ── DRAFT RECAP VIEW ──────────────────────────────────────────────────────────
+function DraftRecapView({ data }) {
+  if (!data?.results?.length) return e(Alert, { type: 'info' }, e('p', null, 'No completed rookie drafts found in your leagues this season.'));
+  const sm = data.summary || {};
+  const VC = { Value: 'var(--accent)', Reach: 'var(--accent2)', 'On par': 'var(--text2)' };
+  const sign = v => v == null ? '' : `${v > 0 ? '+' : ''}${v}`;
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.values ?? 0, label: 'Values', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.reaches ?? 0, label: 'Reaches', color: 'var(--accent2)' }),
+      e(StatTile, { value: sign(sm.net ?? 0), label: 'Net picks of value', color: (sm.net ?? 0) >= 0 ? 'var(--accent)' : 'var(--accent2)' }),
+      e(StatTile, { value: sm.drafts ?? 0, label: 'Drafts', color: 'var(--text3)' })),
+    data.results.map(r => e(Card, { key: r.league },
+      dHead(r.league, `${r.team} · ${r.season} · ${r.teams} teams`,
+        r.net != null && e(Tag, { color: r.net >= 0 ? 'green' : 'red' }, `${sign(r.net)} net`)),
+      r.picks.map((p, i) => e('div', { key: i, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderTop: '1px solid var(--border)' } },
+        e('span', { style: { fontSize: 12, fontWeight: 800, color: 'var(--accent4)', minWidth: 34 } }, p.pick),
+        e(PosBadge, { pos: p.position || '—' }),
+        e('div', { style: { flex: 1, minWidth: 0 } },
+          e('div', { style: { fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, p.adp ? `Your-league ADP ${p.adp} · ${p.samples} drafts` : 'Only drafted in this league')),
+        p.verdict && e('div', { style: { textAlign: 'right' } },
+          e('div', { style: { fontSize: 11, fontWeight: 800, color: VC[p.verdict] } }, p.verdict),
+          e('div', { style: { fontSize: 10, color: 'var(--text3)' } }, sign(p.delta))))))),
+    dNote(data.note));
+}
+
 // ── DRAFT TAB LIST ───────────────────────────────────────────────────────────
 FF.tab({ id: 'draft', label: 'Draft', icon: '🎓', groups: [
   { label: 'Drafts', features: [
     { id: 'draft-dates', title: 'Draft Dates', sub: 'Upcoming draft schedule', icon: '📅', tint: 'purple',
       endpoint: '/analysis/draft-dates', view: DraftDatesView },
-    { id: 'live-draft', title: 'Live Draft', sub: 'Drafts happening now', icon: '🔴', tint: 'red',
-      endpoint: '/analysis/live-draft', view: LiveDraftView },
+    { id: 'on-the-clock', title: 'On the Clock', sub: 'Every live draft: who’s up and picks until you', icon: '⏰', tint: 'red',
+      endpoint: '/analysis/on-the-clock', view: OnTheClockView, badge: d => d.summary && d.summary.live ? cnt(d.summary.on_clock, 'red') : null },
     { id: 'draft-picks', title: 'All Draft Picks', sub: 'Picks you own by league', icon: '📋', tint: 'blue',
       endpoint: '/analysis/draft-picks', view: DraftPicksView },
   ]},
   { label: 'Planning', features: [
+    { id: 'roster-crunch', title: 'Roster Crunch', sub: 'Picks vs open roster + taxi spots', icon: '🧮', tint: 'orange',
+      endpoint: '/analysis/roster-crunch', view: RosterCrunchView, badge: d => d.summary && cnt(d.summary.need_cuts, 'red') },
+    { id: 'draft-for', title: 'Draft-For Guide', sub: 'Positions to target in each league', icon: '🎯', tint: 'green',
+      endpoint: '/analysis/draft-for', view: DraftForView },
     { id: 'rookie-board', title: 'Rookie Draft Board', sub: 'Your picks and what to target', icon: '🎓', tint: 'green',
       endpoint: '/analysis/rookie-board', view: RookieBoardView },
     { id: 'age-profile', title: 'Age Profile', sub: 'Core age and players near the cliff', icon: '⏳', tint: 'orange',
       endpoint: '/analysis/age-profile', view: AgeProfileView },
+  ]},
+  { label: 'After the draft', features: [
+    { id: 'rookie-exposure', title: 'Rookie Exposure', sub: 'Shares of each rookie across leagues', icon: '📊', tint: 'blue',
+      endpoint: '/analysis/rookie-exposure', view: RookieExposureView },
+    { id: 'draft-recap', title: 'Draft Recap', sub: 'Your picks vs your-league ADP', icon: '📝', tint: 'purple',
+      endpoint: '/analysis/draft-recap', view: DraftRecapView },
   ]},
 ]});

@@ -293,6 +293,42 @@ function AlertsView({ data, type }) {
   );
 }
 
+// ── NON-QB IN SUPERFLEX VIEW ──────────────────────────────────────────────────
+function SuperflexView({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  if (!sm.superflex_leagues) return e(Alert, { type: 'info' }, e('p', null, 'None of your active leagues have a Superflex slot.'));
+  const LV = { fix: 'var(--accent2)', ok: 'var(--accent3)', info: 'var(--text3)' };
+  const qbLine = (label, q) => q && e('div', { style: { fontSize: 11, color: 'var(--text3)', marginTop: 2 } },
+    `${label}: ${q.name} (${q.team}) ${q.proj}${q.note ? ` · ${q.note}` : ''}`);
+  return e('div', null,
+    e('div', { className: 'stat-row' },
+      e(StatTile, { value: sm.fixable ?? 0, label: 'Should Swap', color: 'var(--accent2)' }),
+      e(StatTile, { value: sm.flagged ?? 0, label: 'Non-QB in SF', color: 'var(--accent3)' }),
+      e(StatTile, { value: sm.clean ?? 0, label: 'QB in SF', color: 'var(--accent)' }),
+      e(StatTile, { value: sm.superflex_leagues ?? 0, label: 'SF Leagues', color: 'var(--text)' })),
+    !data.results?.length && e(Alert, { type: 'success', title: '✅ All Clear' }, e('p', null, 'Every Superflex slot has a QB in it.')),
+    data.results?.map(r => e(Card, { key: r.league, borderColor: r.fix ? 'var(--accent2)' : 'var(--accent3)' },
+      e('div', { className: 'card-header' },
+        e('div', { style: { minWidth: 0 } }, e('div', { className: 'card-title' }, r.league), r.team && e('div', { className: 'card-subtitle' }, r.team)),
+        e(Tag, { color: r.fix ? 'red' : 'orange' }, r.fix ? 'SWAP' : 'CHECK')),
+      r.flagged.map(f => e('div', { key: f.id, style: { padding: '8px 0', borderTop: '1px solid var(--border)' } },
+        e('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+          e('span', { style: { fontSize: 9, color: 'var(--text3)', minWidth: 40 } }, 'SF'),
+          e(PosBadge, { pos: f.position }),
+          e('span', { style: { flex: 1, minWidth: 0, fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, f.name),
+          e('span', { style: { fontSize: 11, color: 'var(--text3)' } }, f.team),
+          e('span', { style: { fontSize: 14, fontWeight: 700 } }, f.proj)),
+        e('div', { style: { fontSize: 12, fontWeight: 700, color: LV[f.level], marginTop: 4 } }, f.verdict))),
+      qbLine('Best bench QB', r.bench_qbs?.[0]),
+      !r.bench_qbs?.length && e('div', { style: { fontSize: 11, color: 'var(--text3)', marginTop: 2 } }, 'No QB on your bench'),
+      r.fa_qbs?.length > 0 && qbLine('Top FA QB', r.fa_qbs[0]))),
+    data.clean?.length > 0 && e('details', { className: 'card', style: { borderLeft: '3px solid var(--accent)' } },
+      e('summary', { style: { cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--accent)' } }, `✅ QB in every SF slot (${data.clean.length} league${data.clean.length === 1 ? '' : 's'})`),
+      data.clean.map(c => e('div', { key: c.league, style: { fontSize: 12, padding: '6px 0', borderBottom: '1px solid var(--border)', color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, c.league))),
+    data.note && e('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 8 } }, data.note));
+}
+
 // ── K / DEF LEAGUES VIEW ──────────────────────────────────────────────────────
 function KDefLeaguesView({ data }) {
   if (!data) return null;
@@ -354,6 +390,8 @@ FF.tab({ id: 'lineups', label: 'Lineups', icon: '⚡', groups: [
       endpoint: '/alerts/injured-starters', view: AlertsView, viewProps: { type: 'injured' }, badge: d => cnt((d.results || []).length, 'red') },
     { id: 'questionable', title: 'Questionable', sub: 'Questionable starters (game-time decisions)', icon: '⚠️', tint: 'orange',
       endpoint: '/alerts/questionable-starters', view: AlertsView, viewProps: { type: 'questionable' }, badge: d => cnt((d.results || []).length, 'orange') },
+    { id: 'sf-qb', title: 'Non-QB in Superflex', sub: 'RB/WR/TE starting in a Superflex slot', icon: '🏈', tint: 'orange',
+      endpoint: '/alerts/superflex-non-qb', view: SuperflexView, badge: d => d.summary && cnt(d.summary.fixable, 'red') },
     { id: 'bye', title: 'Starters on Bye', sub: 'Byes still in a lineup', icon: '📅', tint: 'red',
       endpoint: '/alerts/starters-on-bye', view: AlertsView, viewProps: { type: 'bye' }, badge: d => cnt((d.results || []).length, 'red') },
     { id: 'open', title: 'Open Spots', sub: 'Empty starting slots', icon: '⭕', tint: 'red',

@@ -2164,37 +2164,51 @@ async def get_season_forecast(req: UserRequest):
 
 @router.post("/analysis/draft-picks")
 async def get_draft_picks(req: UserRequest):
+    """Every rookie-draft pick you hold for the next two drafts, in every league: your own picks you still have
+    plus picks you acquired, and a list of your own picks you've traded away."""
     user, nfl_state, season, current_week, leagues, players_db = await get_user_context(req.username)
     user_id = user["user_id"]
+    fetched = await asyncio.gather(*[asyncio.gather(get_rosters(lg["league_id"]), get_league_users(lg["league_id"]),
+                                                    get_traded_picks(lg["league_id"])) for lg in leagues])
     results = []
-
-    for league in leagues:
-        rosters, league_users, traded_picks, drafts = await asyncio.gather(
-            get_rosters(league["league_id"]),
-            get_league_users(league["league_id"]),
-            get_traded_picks(league["league_id"]),
-            get_drafts(league["league_id"])
-        )
-
-        my_roster = next((r for r in rosters if r["owner_id"] == user_id), None)
-        if not my_roster:
+    for lg, (rosters, league_users, traded_picks) in zip(leagues, fetched):
+        my = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        if not my:
             continue
-
-        next_season = str(int(season) + 1)
-        upcoming = []
-        for pick in traded_picks:
-            if pick.get("season") == next_season and pick.get("owner_id") == my_roster["roster_id"]:
-                orig_roster = next((r for r in rosters if r["roster_id"] == pick.get("roster_id")), None)
-                orig_user_id = orig_roster["owner_id"] if orig_roster else None
-                orig_user = {u["user_id"]: u for u in league_users}.get(orig_user_id)
-                orig_name = (orig_user or {}).get("display_name", f"Roster {pick.get('roster_id')}")
-                upcoming.append({"round": pick["round"], "season": pick["season"], "original_owner": orig_name})
-
-        _mu = next((u for u in league_users if u["user_id"] == user_id), None)
-        my_team_name = (_mu or {}).get("metadata", {}).get("team_name") or user.get("display_name", "")
-        results.append({"league": league["name"], "team": my_team_name, "upcoming_picks": sorted(upcoming, key=lambda x: x["round"])})
-
-    return {"results": results}
+        me = my["roster_id"]
+        rounds = int((lg.get("settings") or {}).get("draft_rounds") or 4)
+        lg_season = int(lg.get("season") or season)
+        # before/during this league-year's draft, that draft is still ahead; otherwise next year's is the first
+        first = lg_season if lg.get("status") in ("pre_draft", "drafting") else lg_season + 1
+        years = [str(first), str(first + 1)]
+        tname = {r["roster_id"]: _team_name(r, league_users, f"Team {r['roster_id']}") for r in rosters}
+        owner_of = {}
+        for tp in traded_picks or []:
+            if str(tp.get("season")) in years:
+                owner_of[(str(tp["season"]), tp.get("round"), tp.get("roster_id"))] = tp.get("owner_id")
+        held, traded_away = [], []
+        for yr in years:
+            for rnd in range(1, rounds + 1):
+                for r in rosters:
+                    orig = r["roster_id"]
+                    owner = owner_of.get((yr, rnd, orig), orig)
+                    if owner == me:
+                        held.append({"season": yr, "round": rnd, "own": orig == me,
+                                     "original_owner": "Own" if orig == me else tname.get(orig, f"Team {orig}")})
+                    elif orig == me:
+                        traded_away.append({"season": yr, "round": rnd, "to": tname.get(owner, f"Team {owner}")})
+        held.sort(key=lambda x: (x["season"], x["round"], not x["own"]))
+        results.append({"league": lg["name"], "team": tname.get(me, user.get("display_name", "")),
+                        "seasons": years, "rounds": rounds, "upcoming_picks": held, "traded_away": traded_away,
+                        "firsts": sum(1 for x in held if x["round"] == 1),
+                        "acquired": sum(1 for x in held if not x["own"])})
+    return {"results": results,
+            "summary": {"picks": sum(len(r["upcoming_picks"]) for r in results),
+                        "firsts": sum(r["firsts"] for r in results),
+                        "acquired": sum(r["acquired"] for r in results),
+                        "traded_away": sum(len(r["traded_away"]) for r in results),
+                        "leagues": len(results)},
+            "note": "Next two rookie drafts per league. Own = your original pick you still hold."}
 
 @router.post("/analysis/draft-dates")
 async def get_draft_dates(req: UserRequest):

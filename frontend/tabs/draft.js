@@ -9,10 +9,10 @@ function DraftPicksView({ data }) {
   const sm = data.summary || {};
   const years = [...new Set(data.results.flatMap(r => r.seasons || []))].sort();
   const pick = (p, i) => e('div', { key: i, style: { padding: '6px 10px', background: 'var(--surface2)', border: `1px solid ${p.round === 1 ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 8, fontSize: 12 } },
-    e('div', { style: { fontWeight: 700, color: p.round === 1 ? 'var(--accent)' : 'var(--accent4)' } }, `Round ${p.round}`),
+    e('div', { style: { fontWeight: 700, color: p.round === 1 ? 'var(--accent)' : 'var(--accent4)' } }, (p.pick || `Round ${p.round}`)),
     e('div', { style: { fontSize: 10, color: p.own ? 'var(--text3)' : 'var(--purple)' } }, p.own ? 'Own' : `From ${p.original_owner}`));
   const gone = (p, k) => e('div', { key: k, style: { padding: '6px 10px', background: 'transparent', border: '1px dashed var(--accent2)', borderRadius: 8, fontSize: 12, opacity: 0.7 } },
-    e('div', { style: { fontWeight: 700, color: 'var(--text3)', textDecoration: 'line-through' } }, `Round ${p.round}`),
+    e('div', { style: { fontWeight: 700, color: 'var(--text3)', textDecoration: 'line-through' } }, (p.pick || `Round ${p.round}`)),
     e('div', { style: { fontSize: 10, color: 'var(--accent2)', fontWeight: 700 } }, `Traded → ${p.to}`));
   const pill = (on, label, onClick) => e('button', { key: label, onClick, style: { flex: 1, padding: '7px 4px', fontSize: 12, fontWeight: 700, borderRadius: 8, border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--surface2)' : 'transparent', color: on ? 'var(--text)' : 'var(--text3)' } }, label);
   return e('div', null,
@@ -33,17 +33,17 @@ function DraftPicksView({ data }) {
         // one light box per draft year: its picks, then anything traded away from that year
         (r.seasons || []).filter(y => yr === 'all' || y === yr).map(y => {
           const h = held.filter(p => p.season === y), a = away.filter(p => p.season === y);
-          const yc = years.indexOf(y) % 2 ? 'var(--purple)' : 'var(--accent4)';   // each draft year keeps its own color
+          const yc = ['var(--accent4)', 'var(--purple)', 'var(--accent3)'][years.indexOf(y) % 3];   // each draft year keeps its own color
           return e('div', { key: y, style: { border: '1px solid var(--border)', borderLeft: `3px solid ${yc}`, background: 'rgba(255,255,255,0.025)', borderRadius: 10, padding: '8px 10px', marginTop: 8 } },
             e('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 } },
               e('span', { style: { fontFamily: 'Bebas Neue', fontSize: '1.25rem', letterSpacing: 1, color: yc } }, `${y} Draft`),
-              e('span', { style: { fontSize: 11, color: 'var(--text3)' } }, `${h.length} pick${h.length === 1 ? '' : 's'}`)),
+              e('span', { style: { fontSize: 11, color: 'var(--text3)' } }, `${(r.order_set || []).includes(y) ? 'Order set · ' : ''}${h.length} pick${h.length === 1 ? '' : 's'}`)),
             h.length + a.length === 0
               ? e('div', { style: { fontSize: 12, color: 'var(--text3)' } }, 'No picks held')
               : e('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
                   // held and traded-away picks together, in round order; traded ones are dashed, faded and struck through
                   [...h.map(p => ({ ...p, held: true })), ...a.map(p => ({ ...p, held: false }))]
-                    .sort((x, z) => x.round - z.round || (z.held - x.held))
+                    .sort((x, z) => x.round - z.round || ((x.overall || 999) - (z.overall || 999)) || (z.held - x.held))
                     .map((p, i) => p.held ? pick(p, i) : gone(p, 'x' + i))),
             h.length === 0 && a.length > 0 && e('div', { style: { fontSize: 11, color: 'var(--text3)', marginTop: 6 } }, 'No picks held this year'));
         }));
